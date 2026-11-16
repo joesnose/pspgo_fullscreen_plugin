@@ -1,9 +1,9 @@
 {
   "name": "PSP Go TV Scale Auto + HOME",
-  "revision": 9,
-  "baseline": "R8 utility detection; R7 filters; previously working HOME/reboot lifecycle",
+  "revision": 10,
+  "baseline": "R9: user confirms save/load fix works; later level-end crash occurs before results",
   "psp_build": "passed -Wall -Wextra -Werror",
-  "host_tests": "ASan/UBSan actual-source HOME/utility/GE memory regressions, including invalid owned ID busy/idle, retained memory until global idle, discarded output, no timeout/fault latch on retirement, native utility mode, zero scaler submissions during utility phases, nested HOME, repeated dialogs, cancellation and startup inside dialog",
+  "host_tests": "ASan/UBSan actual-source paused-state regressions: retain packet/context bytes, no freeing while paused, repeated polls, actual completion and fullscreen resume, pause/reset/idle-fence sequence; existing utility, HOME, input and allocation regressions pass",
   "hardware_tested": false,
   "default_filter": "Soft",
   "control": "Hold L+R, tap Triangle; NODS default L1+R1+Triangle",
@@ -21,11 +21,11 @@
     "Deposterise"
   ],
   "deposterise": "CPU separable edge-aware smoothing, 12-level RGB threshold, optional 544 KiB user-partition buffer",
-  "remaining": "Real PSP Go Burnout save/load completion/cancellation and HOME/exit regression",
+  "remaining": "Determine whether paused-list correction resolves real PSP Go level-end freeze; new list-state diagnostics available",
   "unchanged": "R7 filters/controls and R6 reboot lifecycle; no game-specific or NODS changes",
-  "change": "Leave utility UI native without scaler jobs, resume fullscreen on close; idle-fenced retirement and retry of invalid GE list IDs, without permanent fault or publishing a retired frame",
+  "change": "Treat GE sync state4 as resumable paused, retain command/context and pending ownership until actual completion or fenced invalid-ID retirement; preserve R9 save/load behavior",
   "evidence": {
-    "r8_device_log": "utility_status=1, type1/status1, then list_sync_error 0x80000100 repeated through utility shutdown status4; later disabled with timeouts1",
-    "firmware_reference": "uofw ge sceGeListSync returns SCE_ERROR_INVALID_ID for retired/invalid queue states; errors.h defines 0x80000100"
+    "r9_log": "Save/load closes and fullscreen resumes. Log ends at318337ms during gameplay: timeouts0, invalid_frames0, no later utility event. Crash cause not established.",
+    "code_review": "uofw sceGeListSync returns state4 for paused/resumable lists; PSP SDK names it CANCEL_DONE; old code treated it as complete."
   }
 }

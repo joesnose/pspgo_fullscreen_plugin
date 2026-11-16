@@ -1,10 +1,35 @@
-# PSP Go Fullscreen Plugin — revision 9
+# PSP Go Fullscreen Plugin — revision 10
 
-[Download R9 build and source](pspgo-tv-scale-v1-auto-home-r9.zip) · [Plugin PRX](PSPGoTVScale.prx)
+[Download R10 test build and source](pspgo-tv-scale-v1-auto-home-r10.zip) · [Plugin PRX](PSPGoTVScale.prx)
 
 Immediate fullscreen scaling with ten live filters. Retains revision 6's
 user-confirmed HOME rendering and return-to-VSH handling, and the user-memory
 GPU fix that removes the opicker dependency.
+
+## Paused GPU list handling (R10 test build)
+
+The R9 device log confirms the save/load screen fix worked and fullscreen resumed.
+The later freeze occurred before the level-results screen. Its last gameplay
+record has no timeout, invalid source or utility-entry event, so the log does not
+identify the crash cause. R10 preserves R9's working native save/load path.
+
+Code review found an unsafe completion assumption: PSPSDK names list-sync value
+4 CANCEL_DONE, while firmware sceGeListSync also returns 4 for a resumable PAUSED
+list after sceGeBreak(0), or a previously running list queued again. R9 treated
+that as finished and could overwrite its still-owned command packet/context.
+
+R10 accepts only status 0 as completed. Paused lists retain their ID and all
+GPU-read storage without publishing their image, dequeueing them or latching a
+timeout fault. The worker waits for the game to resume the list; an actual queue
+reset instead uses R9's invalid-ID/global-idle retirement fence. The plugin does
+not force a global GPU continuation or reset.
+
+New logs: list_paused, list_pause_finished and per-second paused_lists/pending.
+Host regressions verify paused packets and contexts remain byte-for-byte intact,
+unload/filter memory cannot be freed while paused, repeated polls do not submit,
+normal completion resumes fullscreen, and pause-to-reset uses the idle fence.
+This is a targeted correctness fix, not a confirmed diagnosis of the reported
+freeze. Please repeat the same level-end transition and retain the log.
 
 ## Save/load dialog recovery (R9)
 
@@ -30,7 +55,7 @@ Other errors retain the existing fault handling.
 Utility detection still uses export-resolved private type/status getters with
 validated read-only leaf bodies, without application callback APIs or guessed
 data addresses. If these getters are unavailable or unrecognized, detection is
-unavailable. Log banner: auto_home_r9. Look for utility_native_output,
+unavailable. Log banner: auto_home_r10. Look for utility_native_output,
 list_id_retired,idle_fence_passed and system_dialog_closed,scaling_resumed.
 
 Host regressions reproduce the reported invalid-ID failure with both busy and
@@ -127,4 +152,4 @@ reference for all four formats, edge rows/alpha/padding, notice bounds, merged
 input validation, one change per press, HOME suppression, optional allocation
 failure, processed user-RAM texture submission, and the existing HOME/reboot
 regressions. Host tests use fake PSP APIs and do not execute actual GE drawing
-or firmware scheduling. Revision 9 has not been tested on real hardware here.
+or firmware scheduling. Revision 10 has not been tested on real hardware here.

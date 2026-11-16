@@ -19,7 +19,7 @@ static SceModule utility_module={.ent_top=&utility_entry,.ent_size=sizeof(utilit
 static int MergedPad(SceCtrlData *pad,int n){(void)n;pad->Buttons=PSP_CTRL_LTRIGGER|PSP_CTRL_RTRIGGER|PSP_CTRL_TRIANGLE;return 1;}
 static void *dep_block;static unsigned dep_block_bytes;
 static int mode_v,w_v,h_v,edram,ge_busy,resize_calls,enqueue_calls,fail_enqueue,open_during_render;
-static int frame_calls,mode_calls,sync_invalid,utility_during_render;
+static int frame_calls,mode_calls,sync_invalid,utility_during_render,sync_paused;
 static Frame game_frame,layer_frame,display_frame;
 static unsigned user_block_bytes;
 static void *user_block;static int alloc_fail,bad_head;
@@ -39,7 +39,7 @@ static void Reset(void){
  mode_v=0x2d2;w_v=480;h_v=272;edram=0x200000;
  game_frame=(Frame){0x0948fb20,512,3,0};layer_frame=(Frame){0,512,3,0};source=game_frame;original0=layer_frame;
  real_mode=FakeMode;get_mode=FakeGetMode;get_size=FakeSize;get_hw_size=FakeHwSize;set_size=FakeSetSize;
- get_frame=FakeGetFrame;real_frame=FakeFrame;home_status=FakeStatus;utility_type=FakeUtilityType;utility_status=FakeUtilityStatus;utility_kind=utility_state=utility_native_ready=sync_invalid=utility_during_render=0;ready_buffer=NULL;logpath=NULL;
+ get_frame=FakeGetFrame;real_frame=FakeFrame;home_status=FakeStatus;utility_type=FakeUtilityType;utility_status=FakeUtilityStatus;utility_kind=utility_state=utility_native_ready=sync_invalid=utility_during_render=sync_paused=paused_lists=list_paused_logged=0;ready_buffer=NULL;logpath=NULL;
  assert(InitGeMemory()==0);
  assert((uintptr_t)packet>=0x08800000u&&(uintptr_t)packet+sizeof(*packet)<=0x0c000000u);
  assert((uintptr_t)ge_context>=(uintptr_t)packet+sizeof(*packet));
@@ -165,6 +165,23 @@ int main(void){
  // Utility already open at startup delays activation without a fault latch.
  Reset();utility_kind=1;utility_state=2;AutoControl(MenuVisible(),0);assert(!active&&!auto_fault&&!reserved);
  utility_state=0;utility_kind=0;AutoControl(MenuVisible(),100000);assert(active);
+ // Firmware state 4 is resumable PAUSED, not proof of completion.
+ Reset();AutoControl(0,0);sync_paused=1;unsigned completed=draws;
+ assert(Render(game_frame,1)==-2&&pending_list==7&&draws==completed);
+ assert(!timeouts&&!abort_requested&&!auto_fault&&paused_lists==1);
+ ScalePacket held_packet=*packet;PspGeContext held_context=*ge_context;
+ assert(WaitList(1000)==-3&&pending_list==7&&paused_lists==1);
+ assert(Render(game_frame,0)<0&&FreeGeMemory()<0&&FreeDepMemory()<0);
+ assert(!memcmp(packet,&held_packet,sizeof(*packet))&&!memcmp(ge_context,&held_context,sizeof(*ge_context)));
+ // Even a global idle report cannot release a known resumable paused list.
+ assert(!ge_busy&&WaitList(1000)==-3&&pending_list==7);
+ sync_paused=0;assert(WaitList(1000)==0&&pending_list<0);
+ AutoControl(0,clock_us+300000);AutoControl(0,clock_us+600000);
+ assert(active&&!auto_fault&&mode_v==0xd2);
+ // Reset after pause uses R9's invalid-ID fence, never paused-ID reuse.
+ Reset();AutoControl(0,0);sync_paused=1;assert(Render(game_frame,1)==-2);
+ sync_paused=0;sync_invalid=ge_busy=1;assert(WaitList(1000)==-2&&pending_list==7);
+ ge_busy=0;assert(WaitList(1000)==1&&pending_list<0);sync_invalid=0;
  // Exact uploaded failure: an invalid owned list ID must not cause an
  // endless wait or reuse memory while other GE work is still running.
  Reset();pending_list=7;sync_invalid=ge_busy=1;
@@ -218,7 +235,7 @@ int main(void){
  filter_mode=FILTER_DITHER;pad_buttons=0;PollFilter(0,109);alloc_fail=1;
  pad_buttons=chord;PollFilter(0,110);assert(filter_mode==FILTER_SHARP&&dep_memory<0);alloc_fail=0;
  assert(FreeGeMemory()==0);
- puts("V9 utility dialog/HOME and GE user-memory checks passed: immediate default-on, TV/source gating, busy retry, fault latch, NODS native status, NULL/kernel output restoration, native menu RGBA5551 GPU scaling, reboot quiesce/scanout cleanup, preserved HOME canvas/stride/format, no HOME resize, automatic resume and in-flight HOME suppression.");
+ puts("R10 paused-GE/utility dialog/HOME and GE user-memory checks passed: immediate default-on, TV/source gating, busy retry, fault latch, NODS native status, NULL/kernel output restoration, native menu RGBA5551 GPU scaling, reboot quiesce/scanout cleanup, preserved HOME canvas/stride/format, no HOME resize, automatic resume and in-flight HOME suppression.");
 }
 unsigned TestRead(unsigned off){return off==0?3:off==0x1c?2160:off==0x2c?480:0;}
 int sceKernelCpuSuspendIntr(void){return 0;}void sceKernelCpuResumeIntr(int n){(void)n;}
@@ -229,7 +246,7 @@ unsigned pspSdkSetK1(unsigned n){return n;}
 unsigned sceKernelGetSystemTimeLow(void){return clock_us;}
 int sceKernelDelayThread(unsigned n){clock_us+=n;return 0;}
 int sceGeListSync(int a,int b){(void)a;(void)b;if(open_during_render){menu_bits=0x100;open_during_render=0;}if(utility_during_render){utility_kind=1;utility_state=1;sync_invalid=1;utility_during_render=0;}
- return sync_invalid?(int)0x80000100u:PSP_GE_LIST_DONE;}
+ return sync_paused?4:sync_invalid?(int)0x80000100u:PSP_GE_LIST_DONE;}
 int sceGeListDeQueue(int n){(void)n;return 0;}
 int sceGeListEnQueue(const void *p,void *s,int cb,PspGeListArgs *a){
  (void)s;(void)cb;assert(p==packet->commands&&a->context==ge_context);

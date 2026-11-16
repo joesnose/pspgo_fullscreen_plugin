@@ -18,7 +18,7 @@
 #include <stddef.h>
 #include "render.h"
 #include "effects.h"
-PSP_MODULE_INFO("PSPGoTVScaleV1Auto",0x1000,1,9);
+PSP_MODULE_INFO("PSPGoTVScaleV1Auto",0x1000,1,10);
 extern void sctrlHENPatchSyscall(void *,void *);
 static const char *logpath;
 #include "logger.inc"
@@ -56,8 +56,8 @@ static SceUID gpu_memory=-1;
 static GeWorkspace *gpu_workspace;
 static ScalePacket *packet;
 static PspGeContext *ge_context;
-static int pending_list=-1,list_invalid_logged;
-static unsigned draws,timeouts,invalid_frames;
+static int pending_list=-1,list_invalid_logged,list_paused_logged;
+static unsigned draws,timeouts,invalid_frames,paused_lists;
 static uint64_t wait_total;
 static unsigned max_wait;
 static int filter_mode=FILTER_SOFT;
@@ -316,7 +316,18 @@ static int WaitList(unsigned timeout_us) {
   for(;;) {
     if(reboot_exit&&reboot_late)return -1;
     int status=sceGeListSync(pending_list,1);
-    if(status==PSP_GE_LIST_DONE||status==PSP_GE_LIST_CANCEL_DONE){pending_list=-1;return 0;}
+    if(status==PSP_GE_LIST_DONE){
+      if(list_paused_logged)logline("list_pause_finished,id,%d\n",pending_list);
+      pending_list=-1;return 0;
+    }
+    // SDK calls value 4 CANCEL_DONE, but the firmware also returns it for a
+    // resumable PAUSED list (sceGeBreak(0), or a previously running list).
+    // Never overwrite packet/context or dequeue it on this result.
+    if(status==4) {
+      if(!list_paused_logged){logline("list_paused,id,%d,storage_retained,1\n",pending_list);list_paused_logged=1;++paused_lists;}
+      if(sceKernelGetSystemTimeLow()-start>=timeout_us)return -3;
+      sceKernelDelayThread(250);continue;
+    }
     if((unsigned)status==0x80000100u) {
       // A utility GE queue reset can retire our ID. An invalid ID alone is
       // not a GPU fence: retain storage until a nonblocking global-idle poll.
@@ -345,15 +356,15 @@ static int RenderWithFilter(Frame f,unsigned target,int selected_filter) {
   if(BuildFilteredScalePacket(packet,f,target,aspect,selected_filter)<0){++invalid_frames;return -1;}
   sceKernelDcacheWritebackRange(packet,sizeof(*packet));
   PspGeListArgs args={sizeof(args),ge_context,0,NULL};
-  list_invalid_logged=0;
+  list_invalid_logged=list_paused_logged=0;
   pending_list=sceGeListEnQueue(packet->commands,NULL,-1,&args);
   if(pending_list<0){logline("enqueue_error,0x%08X\n",(unsigned)pending_list);return -1;}
   unsigned start=sceKernelGetSystemTimeLow();
   int ret=WaitList(100000);
   unsigned elapsed=sceKernelGetSystemTimeLow()-start;
   wait_total+=elapsed;if(elapsed>max_wait)max_wait=elapsed;
-  if(ret==1||ret==-2) {
-    // The result was discarded, not completed. Re-enter the paused restore
+  if(ret==1||ret==-2||ret==-3) {
+    // The image is not ready (retired or still paused). Re-enter the restore
     // path instead of publishing an unfinished buffer or latching a fault.
     active=0;home_paused=reserved;home_scaled_ready=0;home_output_restored=0;
     next_auto=sceKernelGetSystemTimeLow()+300000u;return -2;
@@ -580,9 +591,9 @@ static void LogMenuLayers(void) {
 }
 static void Report(void) {
   Frame f=Snapshot(&source);
-  logline("stats,ms,%u,active,%u,aspect,%u,presents,%u,draws,%u,queue_gpu_wait_avg_us,%u,max_wait_us,%u,timeouts,%u,invalid_frames,%u,source,0x%08X,stride,%d,format,%d\n",
+  logline("stats,ms,%u,active,%u,aspect,%u,presents,%u,draws,%u,queue_gpu_wait_avg_us,%u,max_wait_us,%u,timeouts,%u,invalid_frames,%u,paused_lists,%u,pending,%d,source,0x%08X,stride,%d,format,%d\n",
           sceKernelGetSystemTimeLow()/1000,active,aspect,presentations,draws,
-          draws?(unsigned)(wait_total/draws):0,max_wait,timeouts,invalid_frames,f.address,f.stride,f.format);
+          draws?(unsigned)(wait_total/draws):0,max_wait,timeouts,invalid_frames,paused_lists,pending_list,f.address,f.stride,f.format);
 }
 static int MainThread(SceSize argc,void *argv) {
   (void)argc;(void)argv;
@@ -590,7 +601,7 @@ static int MainThread(SceSize argc,void *argv) {
   for(unsigned i=0;i<2;++i){SceUID fd=sceIoOpen(paths[i],PSP_O_WRONLY|PSP_O_CREAT|PSP_O_TRUNC,0666);if(fd>=0){logpath=paths[i];sceIoClose(fd);break;}}
   if(!logpath)return 0;
   unsigned fw=sceKernelDevkitVersion();
-  logline("PSPGoTVScale,base,alpha1,variant,auto_home_r9,model,%d,devkit,0x%08X\n",sceKernelGetModel(),fw);
+  logline("PSPGoTVScale,base,alpha1,variant,auto_home_r10,model,%d,devkit,0x%08X\n",sceKernelGetModel(),fw);
   if(sceKernelGetModel()!=4||(fw!=0x06060010&&fw!=0x06060110)){logline("unsupported_model_or_firmware\n");return 0;}
   filter_mode=FILTER_SOFT;logline("filter,%s\n",FilterName(filter_mode));
   if(InitGeMemory()<0)return 0;
