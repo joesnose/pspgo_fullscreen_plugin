@@ -18,7 +18,7 @@
 #include <stddef.h>
 #include "render.h"
 #include "effects.h"
-PSP_MODULE_INFO("PSPGoTVScaleV1Auto",0x1000,1,15);
+PSP_MODULE_INFO("PSPGoTVScaleV1Auto",0x1000,1,16);
 extern void sctrlHENPatchSyscall(void *,void *);
 static const char *logpath;
 #include "logger.inc"
@@ -306,10 +306,10 @@ static void CacheHooks(void) {
  * without a visible dialog. It never reads or changes the game's parameter block.
  * The scaler worker alone drains GE and restores native output. */
 static int SavedataInitHook(void *params) {
-  if(!running||reboot_exit||(!reserved&&!save_gate))return real_savedata_init(params);
+  if(!running||reboot_exit||!reserved)return real_savedata_init(params);
   unsigned caller_k1=pspSdkSetK1(0);
   int intr=sceKernelCpuSuspendIntr();
-  ++save_entries;save_gate=1;utility_native_ready=reserved?0:1;
+  ++save_entries;save_gate=1;utility_native_ready=0;
   sceKernelCpuResumeIntr(intr);
   logline("savedata_init_enter,pending,%d\n",pending_list);
   unsigned start=sceKernelGetSystemTimeLow();
@@ -514,10 +514,6 @@ static int ReadyToAutoStart(void) {
 static int PauseForHome(void) {
   active=0;home_paused=1;
   int utility=UtilityVisible();
-  if(utility){
-    if(!reserved&&home_output_restored&&utility_native_ready&&gpu_memory<0&&dep_memory<0)return 0;
-    return RestoreNativeOutput();
-  }
   if(!reserved||(home_output_restored&&(!utility||utility_native_ready)))return 0;
   if(pending_list>=0)return -1;
   // Impose reads the physical layout through its direct kernel import and
@@ -609,7 +605,7 @@ static void AutoControl(int menu,unsigned now) {
   if(manual_native) {
     active=0;home_paused=1;
     if(!manual_native_ready){
-      int ret=RestoreNativeOutput();
+      int ret=RestoreManualNativeOutput();
       if(ret!=0)return;
       manual_native_ready=1;
       logline("diagnostic_native_ready,edram,%d,gpu_memory,%d,no_scaler_jobs,1\n",get_size(),gpu_memory);
@@ -688,7 +684,7 @@ static int MainThread(SceSize argc,void *argv) {
   for(unsigned i=0;i<2;++i){SceUID fd=sceIoOpen(paths[i],PSP_O_WRONLY|PSP_O_CREAT|PSP_O_TRUNC,0666);if(fd>=0){logpath=paths[i];sceIoClose(fd);break;}}
   if(!logpath)return 0;
   unsigned fw=sceKernelDevkitVersion();
-  logline("PSPGoTVScale,base,alpha1,variant,auto_home_r15,model,%d,devkit,0x%08X\n",sceKernelGetModel(),fw);
+  logline("PSPGoTVScale,base,alpha1,variant,auto_home_r16,model,%d,devkit,0x%08X\n",sceKernelGetModel(),fw);
   if(sceKernelGetModel()!=4||(fw!=0x06060010&&fw!=0x06060110)){logline("unsupported_model_or_firmware\n");return 0;}
   filter_mode=FILTER_SOFT;logline("filter,%s\n",FilterName(filter_mode));
   if(InitGeMemory()<0)return 0;

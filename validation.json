@@ -1,16 +1,12 @@
 {
   "name": "PSP Go Fullscreen Plugin",
-  "revision": 15,
-  "baseline": "R13; R14 bypassed at user request",
-  "change": "Fenced current+queued native handoff; rebind native tuples after mode change, detach all upper-VRAM references, global-idle restoration to2MiB, free GPU/deposterise user RAM, fresh allocation on fullscreen return",
+  "revision": 16,
+  "baseline": "R13 automatic load/save/HOME restored; R14/R15 automatic handoff changes bypassed",
+  "change": "Fix manual native toggle to follow driver sync0 shared-layout restrictions; use sync1 for layout changes and vblank fence; manual-only RAM/VRAM teardown/reacquisition",
   "psp_build": "passed -Wall -Wextra -Werror",
   "hardware_tested": false,
-  "evidence": "User clarified duplication occurs when scaling is turned OFF. Old R13 cleared only the next-frame scaled layer before mode change. Native-mode log previously confirmed saving can complete with scaler jobs stopped.",
-  "host_tests": "ASan/UBSan actual-source tests pass: faithful current/pending display model, separate native formats/strides, old-layer detach before mode set, no IRQ-disabled waits, scanout timeout, other upper-VRAM reference and busy-GE deferrals, fenced release to2MiB and freed user workspace, fresh activation, optional-filter fallback, plus prior savedata/write/HOME/reboot/input regressions",
-  "retained": "Immediate Soft fullscreen default; all10 filters; NODS input; existing ordinary HOME/reboot path; original save/write arguments/K1/results",
-  "controls": {
-    "filter": "L+R+Triangle",
-    "fullscreen_native": "L+R+Square"
-  },
-  "remaining": "Real PSP Go native image and save/return test. Original automatic save-time crash cause remains unconfirmed."
+  "evidence": "R15 log: native_handoff_wait detach_layer, save handoff native_ready0 and timeout250991us. Firmware 0x2764..0x27A8 rejects immediate width/format mismatch with0x80000107.",
+  "baseline_verification": "PauseForHome, RenderHome, SavedataInitHook, ModeHook and write_guard.inc identical to R13; manual helper one call site and manual flag guard",
+  "host_tests": "ASan/UBSan actual-source tests pass with firmware-like shared layout metadata, immediate rejection reproduced, legal metadata-matched clear, queued overlay format change, retained R13 automatic-load allocation, fenced manual release/fresh allocation, plus prior lifecycle regressions",
+  "remaining": "Confirm ordinary load screen restored, then test manual off/on image. Original automatic save-time freeze not confirmed fixed."
 }

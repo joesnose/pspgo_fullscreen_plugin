@@ -7,6 +7,10 @@ static int NativeWait(const char *reason){
  if(native_wait_reason!=reason){logline("native_handoff_wait,reason,%s,layer,%d,sync,%d,address,0x%08X\n",reason,native_block_pri,native_block_sync,native_block_address);native_wait_reason=reason;}
  return 1;
 }
+static int NativeError(const char *stage,int result){
+ if(native_wait_reason!=stage)logline("native_handoff_error,stage,%s,result,0x%08X\n",stage,(unsigned)result);
+ return NativeWait(stage);
+}
 static int NativeFence(unsigned frames){
  unsigned count=(unsigned)sceDisplayGetVcount(),start=sceKernelGetSystemTimeLow();
  while((unsigned)((unsigned)sceDisplayGetVcount()-count)<frames){
@@ -31,16 +35,24 @@ static int NativeLayersDetached(void){
  }
  return 1;
 }
-static int RestoreNativeOutput(void){
+static int RestoreManualNativeOutput(void){
+ if(!manual_native)return -1; // never used for automatic save/load or HOME
  active=0;home_paused=1;home_scaled_ready=0;
  if(pending_list>=0)return NativeWait("owned_ge_list");
  if(!running||reboot_exit||reboot_late)return -1;
  if(reserved){
   Frame current,next;
   if(ReadNativeGameFrame(0,&current)<0||ReadNativeGameFrame(1,&next)<0)return NativeWait("native_game_buffer");
-  // Remove both the live TV buffer and any queued replacement before changing
-  // layout. A queued-only clear leaves RGB565/stride768 live during set-mode.
-  if(real_frame(0,NULL,0,0,0)<0||real_frame(0,NULL,0,0,1)<0)return NativeWait("detach_layer");
+  // Firmware permits immediate address changes only with the layer's
+  // existing shared stride/format. Query them; do not clear using stride zero.
+  void *live=NULL;int live_stride=0,live_format=-1;
+  const char *detach_stage="read_live_layer";
+  int detach_intr=sceKernelCpuSuspendIntr();
+  int detached=get_frame(0,&live,&live_stride,&live_format,0);
+  if(detached>=0){detach_stage="detach_live_layer";detached=real_frame(0,NULL,live_stride,live_format,0);}
+  if(detached>=0){detach_stage="detach_queued_layer";detached=real_frame(0,NULL,live_stride,live_format,1);}
+  sceKernelCpuResumeIntr(detach_intr);
+  if(detached<0)return NativeError(detach_stage,detached);
   int fence=NativeFence(1);if(fence)return fence<0?-1:NativeWait("detach_vblank");
   if(real_mode(restore_mode,480,272)<0)return NativeWait("native_mode");
   // Re-read after the mode change. Keep current/pending game tuples distinct;
@@ -51,12 +63,13 @@ static int RestoreNativeOutput(void){
    if(!layer.address||ValidOutputFrame(layer)){
     ret=real_frame(2,(void *)(uintptr_t)current.address,current.stride,current.format,0);
     if(ret>=0)ret=real_frame(2,(void *)(uintptr_t)next.address,next.stride,next.format,1);
-    if(ret>=0)ret=real_frame(0,(void *)(uintptr_t)layer.address,layer.stride,layer.format,0);
+    // A new overlay may use a different pixel format/stride. Queue that
+    // layout change, then wait for it; an immediate update would be rejected.
     if(ret>=0)ret=real_frame(0,(void *)(uintptr_t)layer.address,layer.stride,layer.format,1);
    }
   }
   sceKernelCpuResumeIntr(intr);
-  if(ret<0)return NativeWait("native_bind");
+  if(ret<0)return NativeError("native_bind",ret);
   fence=NativeFence(2);if(fence)return fence<0?-1:NativeWait("native_vblank");
   int mode=-1,w=0,h=0;
   if(get_mode(&mode,&w,&h)<0||mode!=restore_mode||w!=480||h!=272)return NativeWait("native_mode_verify");

@@ -23,7 +23,7 @@ static void *dep_block;static unsigned dep_block_bytes;
 static int mode_v,w_v,h_v,edram,ge_busy,resize_calls,enqueue_calls,fail_enqueue,open_during_render;
 static int frame_calls,mode_calls,sync_invalid,utility_during_render,sync_paused;
 static Frame game_frame,layer_frame,display_frame;
-static int slot_driver,hold_vblank,native_mode_with_old_layer,inject_native_frames,intr_depth;
+static int slot_driver,hold_vblank,native_mode_with_old_layer,inject_native_frames,intr_depth,immediate_rejections;
 static Frame slots[4][2],native_rebound[2];
 static unsigned ge_allocations,ge_releases;
 static unsigned user_block_bytes;
@@ -34,7 +34,7 @@ static int FakeMode(int m,int w,int h){
  if(slot_driver&&m==restore_mode){
   uintptr_t a=slots[0][0].address&0x1fffffffu;
   if(a>=0x04200000u&&a<0x04400000u)native_mode_with_old_layer++;
-  if(inject_native_frames){slots[2][0]=(Frame){0x04000000,512,1,0};slots[2][1]=(Frame){0x04088000,640,3,0};}
+  if(inject_native_frames){slots[2][0]=(Frame){0x04000000,512,3,0};slots[2][1]=(Frame){0x04088000,512,3,0};}
  }
  mode_v=m;w_v=w;h_v=h;return 0;
 }
@@ -43,9 +43,26 @@ static int FakeSize(void){return edram;}
 static int FakeHwSize(void){return 0x400000;}
 static int FakeSetSize(int n){edram=n;resize_calls++;return 0;}
 static int FakeGetFrame(int pri,void **p,int *s,int *f,int sync){(void)sync;Frame v=slot_driver?slots[pri][sync]:pri==2?game_frame:layer_frame;*p=(void *)(uintptr_t)v.address;*s=v.stride;*f=v.format;return 0;}
-static int FakeFrame(int pri,void *p,int stride,int format,int sync){(void)sync;frame_calls++;display_frame=(Frame){(uintptr_t)p,stride,format,0};if(pri==0)layer_frame=display_frame;
- if(slot_driver){slots[pri][sync]=display_frame;if(pri==2)native_rebound[sync]=display_frame;}
- return 0;}
+static int FakeFrame(int pri,void *p,int stride,int format,int sync){
+ frame_calls++;
+ if(slot_driver){
+  // Real firmware shares layout metadata between live and pending addresses.
+  // Immediate mode rejects stride/format changes and updates both addresses.
+  if(!sync&&(slots[pri][0].stride!=stride||slots[pri][0].format!=format)){
+   immediate_rejections++;return (int)0x80000107u;
+  }
+  Frame v={(uintptr_t)p,stride,format,0};
+  if(!sync)slots[pri][0]=slots[pri][1]=v;
+  else {
+   slots[pri][1]=v;
+   slots[pri][0].stride=stride;slots[pri][0].format=format;
+  }
+  if(pri==2)native_rebound[sync]=v;
+ }
+ display_frame=(Frame){(uintptr_t)p,stride,format,0};
+ if(pri==0)layer_frame=display_frame;
+ return 0;
+}
 static int FakeSavedataInit(void *params){
  assert(params==save_parameter&&current_k1==0x100000);save_calls++;
  assert(save_gate==save_expected_gate);
@@ -65,7 +82,7 @@ static int FakeAsync(SceUID fd,int64_t *result){assert(fd==write_fd&&result==asy
 static int FakeAsyncStat(SceUID fd,int poll,int64_t *result){assert(poll==1);return FakeAsync(fd,result);}
 static int FakeClose(SceUID fd){assert(fd==write_fd&&current_k1==0x100000);return close_result;}
 static void Reset(void){
- assert(intr_depth==0);slot_driver=hold_vblank=native_mode_with_old_layer=inject_native_frames=0;native_wait_reason=NULL;
+ assert(intr_depth==0);slot_driver=hold_vblank=native_mode_with_old_layer=inject_native_frames=immediate_rejections=0;native_wait_reason=NULL;
  manual_native=manual_native_ready=square_down=dep_only_fail=0;
  memset(async_writes,0,sizeof(async_writes));async_overflow=write_calls=0;
  file_hooks[0].original=file_hooks[1].original=(uintptr_t)FakeWrite;
@@ -205,17 +222,20 @@ int main(void){
  // Utility already open at startup delays activation without a fault latch.
  Reset();utility_kind=1;utility_state=2;AutoControl(MenuVisible(),0);assert(!active&&!auto_fault&&!reserved);
  utility_state=0;utility_kind=0;AutoControl(MenuVisible(),100000);assert(active);
- // Faithful display model: sync0 is live and sync1 is pending. A queued-only
- // detach would leave the old scaled RGB565 layer live during native mode set.
+ // Firmware-faithful model: separate live/pending addresses, shared layout,
+ // and immediate-update restrictions. Reproduce the exact rejected R15 call.
  Reset();AutoControl(0,0);slot_driver=1;inject_native_frames=1;
  memset(slots,0,sizeof(slots));slots[0][0]=slots[0][1]=(Frame){0x04200000,TV_STRIDE,0,0};
  slots[2][0]=(Frame){0x04000000,512,3,0};slots[2][1]=(Frame){0x04088000,512,3,0};
  unsigned old_allocations=ge_allocations,old_releases=ge_releases;
+ assert(real_frame(0,NULL,0,0,0)==(int)0x80000107u&&immediate_rejections==1);
+ original0=(Frame){0xabbbb800,512,1,0};
  manual_native=1;AutoControl(0,0);
  assert(manual_native_ready&&!reserved&&packet==NULL&&ge_context==NULL&&gpu_memory<0&&edram==0x200000);
- assert(native_mode_with_old_layer==0&&slots[0][0].address==0&&slots[0][1].address==0);
+ assert(native_mode_with_old_layer==0&&immediate_rejections==1);
+ assert(slots[0][0].address==0xabbbb800&&slots[0][1].address==0xabbbb800&&slots[0][0].format==1&&slots[0][0].stride==512);
  assert(native_rebound[0].address==0x04000000&&native_rebound[1].address==0x04088000);
- assert(native_rebound[0].stride==512&&native_rebound[0].format==1&&native_rebound[1].stride==640&&native_rebound[1].format==3&&ge_releases==old_releases+1);
+ assert(native_rebound[0].stride==512&&native_rebound[0].format==3&&native_rebound[1].stride==512&&native_rebound[1].format==3&&ge_releases==old_releases+1);
  assert(clock_us>=3*16667u&&NativeLayersDetached());
  slot_driver=0;manual_native=0;next_auto=clock_us;AutoControl(0,clock_us);
  assert(active&&reserved&&packet&&ge_allocations==old_allocations+1&&edram==0x400000);
@@ -294,6 +314,7 @@ int main(void){
  current_k1=0x100000;save_worker_step=1;save_result=0;save_expected_gate=save_expected_ready=1;save_returns_status=1;
  assert(SavedataInitHook(save_parameter)==0&&save_calls==1&&current_k1==0x100000);
  assert(enqueue_calls==save_jobs&&!active&&save_gate&&home_paused&&save_entries==0);
+ assert(reserved&&gpu_memory>=0&&packet&&edram==0x400000);
  UpdateSaveGate(clock_us+299999);assert(save_gate);
  UpdateSaveGate(clock_us+300000);assert(!save_gate&&UtilityVisible());
  utility_state=4;layer_frame=(Frame){0,512,3,0};AutoControl(MenuVisible(),clock_us+600000);
@@ -385,7 +406,7 @@ int main(void){
  filter_mode=FILTER_DITHER;pad_buttons=0;PollFilter(0,109);alloc_fail=1;
  pad_buttons=chord;PollFilter(0,110);assert(filter_mode==FILTER_SHARP&&dep_memory<0);alloc_fail=0;
  assert(FreeGeMemory()==0);
- puts("R15 fenced-native-release/direct-write/savedata-entry/paused-GE/utility dialog/HOME and GE user-memory checks passed: immediate default-on, TV/source gating, busy retry, fault latch, NODS native status, NULL/kernel output restoration, native menu RGBA5551 GPU scaling, reboot quiesce/scanout cleanup, preserved HOME canvas/stride/format, no HOME resize, automatic resume and in-flight HOME suppression.");
+ puts("R16 manual-handoff/load-rollback/direct-write/savedata-entry/paused-GE/utility dialog/HOME and GE user-memory checks passed: immediate default-on, TV/source gating, busy retry, fault latch, NODS native status, NULL/kernel output restoration, native menu RGBA5551 GPU scaling, reboot quiesce/scanout cleanup, preserved HOME canvas/stride/format, no HOME resize, automatic resume and in-flight HOME suppression.");
 }
 unsigned TestRead(unsigned off){return off==0?3:off==0x1c?2160:off==0x2c?480:0;}
 int sceKernelCpuSuspendIntr(void){int old=intr_depth;intr_depth++;return old;}void sceKernelCpuResumeIntr(int n){assert(n<intr_depth);intr_depth=n;}
