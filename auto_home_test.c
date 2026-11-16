@@ -6,7 +6,9 @@
 #include <assert.h>
 #include <stdio.h>
 #include <sys/mman.h>
-static unsigned clock_us,menu_bits,pad_buttons;
+static unsigned clock_us,menu_bits,pad_buttons,current_k1;
+static int save_worker_step,save_calls,save_result,save_expected_gate,save_expected_ready,save_returns_status;
+static void *save_parameter;
 static int utility_kind,utility_state;
 static int FakeUtilityType(void){return utility_kind;}
 static int FakeUtilityStatus(void){return utility_state;}
@@ -31,7 +33,15 @@ static int FakeHwSize(void){return 0x400000;}
 static int FakeSetSize(int n){edram=n;resize_calls++;return 0;}
 static int FakeGetFrame(int pri,void **p,int *s,int *f,int sync){(void)sync;Frame v=pri==2?game_frame:layer_frame;*p=(void *)(uintptr_t)v.address;*s=v.stride;*f=v.format;return 0;}
 static int FakeFrame(int pri,void *p,int stride,int format,int sync){(void)sync;frame_calls++;display_frame=(Frame){(uintptr_t)p,stride,format,0};if(pri==0)layer_frame=display_frame;return 0;}
+static int FakeSavedataInit(void *params){
+ assert(params==save_parameter&&current_k1==0x100000);save_calls++;
+ assert(save_gate==save_expected_gate);
+ if(save_expected_ready)assert(utility_native_ready&&home_output_restored&&pending_list<0&&mode_v==0x2d2);
+ utility_kind=save_returns_status?1:0;utility_state=save_returns_status;
+ return save_result;
+}
 static void Reset(void){
+ save_gate=save_entries=save_quiet_until=save_worker_step=save_calls=current_k1=0;real_savedata_init=FakeSavedataInit;
  pending_list=-1;assert(FreeDepMemory()==0);assert(FreeGeMemory()==0);alloc_fail=bad_head=0;
  running=1;active=reserved=abort_requested=home_paused=home_scaled_ready=reboot_exit=reboot_late=reboot_joined=worker_done=home_output_restored=auto_fault=auto_ready_wait=0;
  pending_list=-1;next_auto=auto_ready_since=clock_us=menu_bits=0;aspect=output_index=0;
@@ -165,6 +175,32 @@ int main(void){
  // Utility already open at startup delays activation without a fault latch.
  Reset();utility_kind=1;utility_state=2;AutoControl(MenuVisible(),0);assert(!active&&!auto_fault&&!reserved);
  utility_state=0;utility_kind=0;AutoControl(MenuVisible(),100000);assert(active);
+ // Silent savedata entry: pause BEFORE the original API sets utility state.
+ Reset();AutoControl(0,0);int save_jobs=enqueue_calls;save_parameter=(void *)0x12345678;
+ current_k1=0x100000;save_worker_step=1;save_result=0;save_expected_gate=save_expected_ready=1;save_returns_status=1;
+ assert(SavedataInitHook(save_parameter)==0&&save_calls==1&&current_k1==0x100000);
+ assert(enqueue_calls==save_jobs&&!active&&save_gate&&home_paused&&save_entries==0);
+ UpdateSaveGate(clock_us+299999);assert(save_gate);
+ UpdateSaveGate(clock_us+300000);assert(!save_gate&&UtilityVisible());
+ utility_state=4;layer_frame=(Frame){0,512,3,0};AutoControl(MenuVisible(),clock_us+600000);
+ assert(active&&!auto_fault);
+ // Failed init preserves result and input identity; quiet gate expires even
+ // when no utility status ever becomes visible (including very short saves).
+ Reset();AutoControl(0,0);current_k1=0x100000;save_worker_step=1;save_result=-123;save_returns_status=0;
+ assert(SavedataInitHook(save_parameter)==-123&&save_calls==1&&current_k1==0x100000);
+ UpdateSaveGate(clock_us+300000);assert(!UtilityVisible());
+ AutoControl(0,clock_us+600000);assert(active&&!auto_fault);
+ // Busy handoff is bounded; still call the original once without changing
+ // its result or freeing/reusing an in-flight packet.
+ Reset();AutoControl(0,0);pending_list=7;current_k1=0x100000;save_worker_step=1;
+ save_expected_ready=0;save_result=7;save_returns_status=0;unsigned before=clock_us;
+ ScalePacket before_save=*packet;
+ assert(SavedataInitHook(save_parameter)==7&&save_calls==1&&clock_us-before==250000);
+ assert(pending_list==7&&FreeGeMemory()<0&&!memcmp(packet,&before_save,sizeof(*packet)));
+ assert(save_gate&&!auto_fault&&current_k1==0x100000);pending_list=-1;
+ // No scaling reservation: preserve the API with no handshake/delay.
+ Reset();current_k1=0x100000;save_expected_gate=0;save_expected_ready=0;save_result=42;
+ assert(SavedataInitHook(save_parameter)==42&&save_calls==1&&!save_gate&&clock_us==0);
  // Firmware state 4 is resumable PAUSED, not proof of completion.
  Reset();AutoControl(0,0);sync_paused=1;unsigned completed=draws;
  assert(Render(game_frame,1)==-2&&pending_list==7&&draws==completed);
@@ -235,16 +271,16 @@ int main(void){
  filter_mode=FILTER_DITHER;pad_buttons=0;PollFilter(0,109);alloc_fail=1;
  pad_buttons=chord;PollFilter(0,110);assert(filter_mode==FILTER_SHARP&&dep_memory<0);alloc_fail=0;
  assert(FreeGeMemory()==0);
- puts("R10 paused-GE/utility dialog/HOME and GE user-memory checks passed: immediate default-on, TV/source gating, busy retry, fault latch, NODS native status, NULL/kernel output restoration, native menu RGBA5551 GPU scaling, reboot quiesce/scanout cleanup, preserved HOME canvas/stride/format, no HOME resize, automatic resume and in-flight HOME suppression.");
+ puts("R11 savedata-entry/paused-GE/utility dialog/HOME and GE user-memory checks passed: immediate default-on, TV/source gating, busy retry, fault latch, NODS native status, NULL/kernel output restoration, native menu RGBA5551 GPU scaling, reboot quiesce/scanout cleanup, preserved HOME canvas/stride/format, no HOME resize, automatic resume and in-flight HOME suppression.");
 }
 unsigned TestRead(unsigned off){return off==0?3:off==0x1c?2160:off==0x2c?480:0;}
 int sceKernelCpuSuspendIntr(void){return 0;}void sceKernelCpuResumeIntr(int n){(void)n;}
 SceModule *sceKernelFindModuleByName(const char *n){if(input_fixture>=2&&!strcmp(n,"sceUtility_Driver"))return &utility_module;return input_fixture==1&&!strcmp(n,"sceImpose_Driver")?&input_module:NULL;}
 void sceKernelDcacheWritebackInvalidateAll(void){}void sceKernelIcacheInvalidateAll(void){}
 void sceKernelDcacheWritebackRange(const void *p,unsigned n){(void)p;(void)n;}
-unsigned pspSdkSetK1(unsigned n){return n;}
+unsigned pspSdkSetK1(unsigned n){unsigned old=current_k1;current_k1=n;return old;}
 unsigned sceKernelGetSystemTimeLow(void){return clock_us;}
-int sceKernelDelayThread(unsigned n){clock_us+=n;return 0;}
+int sceKernelDelayThread(unsigned n){clock_us+=n;if(save_worker_step&&save_gate&&pending_list<0)AutoControl(MenuVisible(),clock_us);return 0;}
 int sceGeListSync(int a,int b){(void)a;(void)b;if(open_during_render){menu_bits=0x100;open_during_render=0;}if(utility_during_render){utility_kind=1;utility_state=1;sync_invalid=1;utility_during_render=0;}
  return sync_paused?4:sync_invalid?(int)0x80000100u:PSP_GE_LIST_DONE;}
 int sceGeListDeQueue(int n){(void)n;return 0;}

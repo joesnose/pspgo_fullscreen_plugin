@@ -1,10 +1,43 @@
-# PSP Go Fullscreen Plugin — revision 10
+# PSP Go Fullscreen Plugin — revision 11
 
-[Download R10 test build and source](pspgo-tv-scale-v1-auto-home-r10.zip) · [Plugin PRX](PSPGoTVScale.prx)
+[Download R11 build and source](pspgo-tv-scale-v1-auto-home-r11.zip) · [Plugin PRX](PSPGoTVScale.prx)
 
 Immediate fullscreen scaling with ten live filters. Retains revision 6's
 user-confirmed HOME rendering and return-to-VSH handling, and the user-memory
 GPU fix that removes the opicker dependency.
+
+## Savedata-entry guard (R11 test build)
+
+R10's device log shows six paused lists completing correctly, followed by another
+abrupt freeze before a results screen, with no new utility event or GPU timeout.
+User testing confirms the plugin is involved and the game saves without opening
+the system save screen. The exact failing operation is still unconfirmed.
+
+R11 wraps the game's sceUtilitySavedataInitStart syscall, covering AUTO/silent
+operations using that API. Before the original function starts, it suppresses
+new scaler submissions and requests native output from the existing worker.
+The calling thread yields for at most 250 ms for the worker to drain the owned
+list and acknowledge the handoff. It then calls the original function exactly
+once, passing the untouched parameter pointer, with the original caller K1 and
+return value. Even if the handoff times out, the normal save API is allowed to
+run and new scaler jobs remain suppressed. No save files are opened or modified
+by the guard. Display callbacks still perform no waits, GPU work or file I/O.
+
+A 300 ms quiet period after the original call returns covers short operations;
+normal utility status continues to suppress scaling for longer operations. The
+worker resumes the selected filter using the existing native-dialog recovery.
+An outstanding entry blocks explicit plugin unload. Reboot keeps hooks/storage
+resident as before. The existing visible-save-screen fix remains in place.
+
+Logs identify savedata_entry_guard support, savedata_init_enter,
+savedata_init_handoff,native_ready (1 confirms the handoff), and
+savedata_init_return. These markers distinguish an entry race from a game that
+bypasses this API and writes its files directly. No direct file-I/O hooks were
+added. This is a targeted test build, not a confirmed crash diagnosis.
+
+Host checks cover the handoff before any utility status is visible, caller K1,
+parameter identity, original success/failure results, bounded timeout with
+in-flight storage retained, quiet-period expiry, and normal fullscreen resume.
 
 ## Paused GPU list handling (R10 test build)
 
@@ -55,7 +88,7 @@ Other errors retain the existing fault handling.
 Utility detection still uses export-resolved private type/status getters with
 validated read-only leaf bodies, without application callback APIs or guessed
 data addresses. If these getters are unavailable or unrecognized, detection is
-unavailable. Log banner: auto_home_r10. Look for utility_native_output,
+unavailable. Log banner: auto_home_r11. Look for utility_native_output,
 list_id_retired,idle_fence_passed and system_dialog_closed,scaling_resumed.
 
 Host regressions reproduce the reported invalid-ID failure with both busy and
@@ -152,4 +185,4 @@ reference for all four formats, edge rows/alpha/padding, notice bounds, merged
 input validation, one change per press, HOME suppression, optional allocation
 failure, processed user-RAM texture submission, and the existing HOME/reboot
 regressions. Host tests use fake PSP APIs and do not execute actual GE drawing
-or firmware scheduling. Revision 10 has not been tested on real hardware here.
+or firmware scheduling. Revision 11 has not been tested on real hardware here.

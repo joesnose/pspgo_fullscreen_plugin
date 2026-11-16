@@ -18,7 +18,7 @@
 #include <stddef.h>
 #include "render.h"
 #include "effects.h"
-PSP_MODULE_INFO("PSPGoTVScaleV1Auto",0x1000,1,10);
+PSP_MODULE_INFO("PSPGoTVScaleV1Auto",0x1000,1,11);
 extern void sctrlHENPatchSyscall(void *,void *);
 static const char *logpath;
 #include "logger.inc"
@@ -56,7 +56,8 @@ static SceUID gpu_memory=-1;
 static GeWorkspace *gpu_workspace;
 static ScalePacket *packet;
 static PspGeContext *ge_context;
-static int pending_list=-1,list_invalid_logged,list_paused_logged;
+static volatile int pending_list=-1;
+static int list_invalid_logged,list_paused_logged;
 static unsigned draws,timeouts,invalid_frames,paused_lists;
 static uint64_t wait_total;
 static unsigned max_wait;
@@ -64,15 +65,28 @@ static int filter_mode=FILTER_SOFT;
 static IntFn home_status,utility_type,utility_status;
 static volatile int home_paused,home_scaled_ready,reboot_exit,reboot_late;
 static int reboot_joined,worker_done;
-static int home_output_restored,utility_native_ready,auto_fault;
+static volatile int home_output_restored,utility_native_ready;
+static int auto_fault;
+typedef int (*SavedataInitFn)(void *);
+static SavedataInitFn real_savedata_init;
+static int savedata_hooked;
+static volatile unsigned save_entries;
+static volatile int save_gate;
+static volatile unsigned save_quiet_until;
 static unsigned next_auto,last_home_resolve,auto_ready_since;
 static int auto_ready_wait;
 static int HomeVisible(void){return home_status&&(home_status()&0x100)!=0;}
-static int UtilityVisible(void){
+static int FirmwareUtilityVisible(void){
   if(!utility_type||!utility_status||utility_type()<=0)return 0;
   int status=utility_status();
   // 4 is completed shutdown; no display owner remains. 5 is active/abort.
   return status==1||status==2||status==3||status==5;
+}
+static int UtilityVisible(void){return save_gate||FirmwareUtilityVisible();}
+static void UpdateSaveGate(unsigned now){
+  int intr=sceKernelCpuSuspendIntr();
+  if(save_gate&&!save_entries&&(int)(now-save_quiet_until)>=0)save_gate=0;
+  sceKernelCpuResumeIntr(intr);
 }
 static int MenuVisible(void){return HomeVisible()||UtilityVisible();}
 static int ScalingVisible(void){return running&&!reboot_exit&&active&&!home_paused&&!MenuVisible();}
@@ -277,6 +291,33 @@ static void PrepareHook(Hook *h,unsigned address) {
 static void CacheHooks(void) {
   sceKernelDcacheWritebackInvalidateAll();sceKernelIcacheInvalidateAll();
 }
+/* This user-syscall wrapper runs before savedata starts, including AUTO modes
+ * without a visible dialog. It never reads or changes the game's parameter block.
+ * The scaler worker alone drains GE and restores native output. */
+static int SavedataInitHook(void *params) {
+  if(!running||reboot_exit||!reserved)return real_savedata_init(params);
+  unsigned caller_k1=pspSdkSetK1(0);
+  int intr=sceKernelCpuSuspendIntr();
+  ++save_entries;save_gate=1;utility_native_ready=0;
+  sceKernelCpuResumeIntr(intr);
+  logline("savedata_init_enter,pending,%d\n",pending_list);
+  unsigned start=sceKernelGetSystemTimeLow();
+  while(running&&!reboot_exit&&
+        (pending_list>=0||!utility_native_ready||!home_output_restored)&&
+        sceKernelGetSystemTimeLow()-start<250000u)sceKernelDelayThread(1000);
+  int ready=pending_list<0&&utility_native_ready&&home_output_restored;
+  logline("savedata_init_handoff,native_ready,%u,wait_us,%u,pending,%d\n",ready,sceKernelGetSystemTimeLow()-start,pending_list);
+  // Preserve the original pointer validation, result and save operation even
+  // if the bounded handoff times out. Keep new scaler jobs suppressed meanwhile.
+  pspSdkSetK1(caller_k1);
+  int result=real_savedata_init(params);
+  pspSdkSetK1(0);
+  intr=sceKernelCpuSuspendIntr();
+  save_quiet_until=sceKernelGetSystemTimeLow()+300000u;--save_entries;
+  sceKernelCpuResumeIntr(intr);
+  if(!reboot_late)logline("savedata_init_return,result,0x%08X\n",(unsigned)result);
+  pspSdkSetK1(caller_k1);return result;
+}
 static int InstallHooks(void) {
   unsigned f=Find("sceDisplay_Service","sceDisplay_driver",0x3e17fe8d);
   unsigned m=Find("sceDisplay_Service","sceDisplay_driver",0x0e20f177);
@@ -300,10 +341,14 @@ static int InstallHooks(void) {
   sceKernelCpuResumeIntr(intr);
   sctrlHENPatchSyscall((void *)get_mode,GetModeHook);
   sctrlHENPatchSyscall((void *)get_size,GetSizeHook);
+  real_savedata_init=(SavedataInitFn)(uintptr_t)Find("sceUtility_Driver","sceUtility",0x50c4cd57);
+  if(real_savedata_init){sctrlHENPatchSyscall((void *)real_savedata_init,SavedataInitHook);savedata_hooked=1;}
+  logline("savedata_entry_guard,%u\n",savedata_hooked);
   hooks_installed=1;return 0;
 }
 static void RemoveHooks(void) {
   if(!hooks_installed)return;
+  if(savedata_hooked){sctrlHENPatchSyscall(SavedataInitHook,(void *)real_savedata_init);savedata_hooked=0;}
   sctrlHENPatchSyscall(GetModeHook,(void *)get_mode);
   sctrlHENPatchSyscall(GetSizeHook,(void *)get_size);
   int intr=sceKernelCpuSuspendIntr();
@@ -601,7 +646,7 @@ static int MainThread(SceSize argc,void *argv) {
   for(unsigned i=0;i<2;++i){SceUID fd=sceIoOpen(paths[i],PSP_O_WRONLY|PSP_O_CREAT|PSP_O_TRUNC,0666);if(fd>=0){logpath=paths[i];sceIoClose(fd);break;}}
   if(!logpath)return 0;
   unsigned fw=sceKernelDevkitVersion();
-  logline("PSPGoTVScale,base,alpha1,variant,auto_home_r10,model,%d,devkit,0x%08X\n",sceKernelGetModel(),fw);
+  logline("PSPGoTVScale,base,alpha1,variant,auto_home_r11,model,%d,devkit,0x%08X\n",sceKernelGetModel(),fw);
   if(sceKernelGetModel()!=4||(fw!=0x06060010&&fw!=0x06060110)){logline("unsupported_model_or_firmware\n");return 0;}
   filter_mode=FILTER_SOFT;logline("filter,%s\n",FilterName(filter_mode));
   if(InitGeMemory()<0)return 0;
@@ -612,6 +657,7 @@ static int MainThread(SceSize argc,void *argv) {
   last_home_resolve=last_report;
   while(running) {
     unsigned now=sceKernelGetSystemTimeLow();
+    UpdateSaveGate(now);
     if(now-last_home_resolve>=500000u){ResolveHomeStatus();ResolveUtilityStatus();ResolveInput();last_home_resolve=now;}
     int menu=MenuVisible();
     static int last_utility;int utility=UtilityVisible();
@@ -658,7 +704,7 @@ int module_start(SceSize args,void *argp) {
 }
 int module_stop(SceSize args,void *argp) {
   (void)args;(void)argp;
-  if(pending_list>=0)return -1; // Do not free a context/list still used by GE.
+  if(pending_list>=0||save_entries)return -1; // Do not free a context/list still used by GE.
   running=0;
   if(worker>=0){sceKernelWaitThreadEnd(worker,NULL);sceKernelDeleteThread(worker);worker=-1;}
   if(reserved&&Deactivate()<0)return -1;

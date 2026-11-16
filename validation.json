@@ -1,9 +1,9 @@
 {
   "name": "PSP Go TV Scale Auto + HOME",
-  "revision": 10,
-  "baseline": "R9: user confirms save/load fix works; later level-end crash occurs before results",
+  "revision": 11,
+  "baseline": "R10 preserves R9 working visible save/load fix; six paused GPU lists completed correctly but silent-save crash persists",
   "psp_build": "passed -Wall -Wextra -Werror",
-  "host_tests": "ASan/UBSan actual-source paused-state regressions: retain packet/context bytes, no freeing while paused, repeated polls, actual completion and fullscreen resume, pause/reset/idle-fence sequence; existing utility, HOME, input and allocation regressions pass",
+  "host_tests": "ASan/UBSan actual-source regressions pass: pre-init native handoff, untouched parameter identity, caller K1 preservation, original result propagation, 250ms handoff timeout, retained in-flight packet, 300ms gate expiry and utility-driven resume; prior paused-ID/HOME/input/memory regressions pass",
   "hardware_tested": false,
   "default_filter": "Soft",
   "control": "Hold L+R, tap Triangle; NODS default L1+R1+Triangle",
@@ -21,11 +21,12 @@
     "Deposterise"
   ],
   "deposterise": "CPU separable edge-aware smoothing, 12-level RGB threshold, optional 544 KiB user-partition buffer",
-  "remaining": "Determine whether paused-list correction resolves real PSP Go level-end freeze; new list-state diagnostics available",
+  "remaining": "Real PSP Go silent-save test, native_ready marker and save-entry/return evidence; crash resolution not yet established",
   "unchanged": "R7 filters/controls and R6 reboot lifecycle; no game-specific or NODS changes",
-  "change": "Treat GE sync state4 as resumable paused, retain command/context and pending ownership until actual completion or fenced invalid-ID retirement; preserve R9 save/load behavior",
+  "change": "Wrap savedata-init user syscall to request worker drain/native output before original API starts; bounded handoff and post-call quiet period; preserve parameters, caller K1 and result",
   "evidence": {
-    "r9_log": "Save/load closes and fullscreen resumes. Log ends at318337ms during gameplay: timeouts0, invalid_frames0, no later utility event. Crash cause not established.",
-    "code_review": "uofw sceGeListSync returns state4 for paused/resumable lists; PSP SDK names it CANCEL_DONE; old code treated it as complete."
+    "r10_log": "Six list_paused/list_pause_finished pairs, no later utility entry, last record263036ms timeouts0 invalid_frames0 pending-1. Crash cause remains unknown.",
+    "user_feedback": "Disabling plugin gets past failure; saving without visible system dialog.",
+    "limitation": "Does not intercept games writing save files directly; new markers establish whether failing operation uses PSP savedata API."
   }
 }
