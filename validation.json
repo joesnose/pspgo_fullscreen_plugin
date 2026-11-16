@@ -1,0 +1,26 @@
+{
+  "name": "PSP Go TV Scale Auto + HOME",
+  "revision": 7,
+  "baseline": "User-confirmed working revision 6",
+  "psp_build": "passed -Wall -Wextra -Werror",
+  "host_tests": "ASan/UBSan: packet 144 cases; filter 160 cases; independent full-frame deposterise reference for four formats; notice bounds; actual-source controller, allocation, HOME and reboot checks",
+  "hardware_tested": false,
+  "default_filter": "Soft",
+  "control": "Hold L+R, tap Triangle; NODS default L1+R1+Triangle",
+  "config": "No INI access or persistence",
+  "filters": [
+    "Sharp",
+    "Soft",
+    "Blur",
+    "CRT",
+    "Soft CRT",
+    "RGB Mask",
+    "Sharpen",
+    "Posterise",
+    "Dither",
+    "Deposterise"
+  ],
+  "deposterise": "CPU separable edge-aware smoothing, 12-level RGB threshold, optional 544 KiB user-partition buffer",
+  "remaining": "PSP Go image quality, filter performance and live controller validation",
+  "unchanged": "R6 HOME and reboot lifecycle; no NODS or volume modifications"
+}
