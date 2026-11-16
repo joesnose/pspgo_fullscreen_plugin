@@ -7,9 +7,15 @@
 #include <stdio.h>
 #include <sys/mman.h>
 static unsigned clock_us,menu_bits,pad_buttons;
+static int utility_kind,utility_state;
+static int FakeUtilityType(void){return utility_kind;}
+static int FakeUtilityStatus(void){return utility_state;}
 static SceModule input_module={.text_addr=0x88001000,.text_size=0x100,.attribute=0x1000};
 static SceModule input_owner={.text_addr=0x88002000,.text_size=0x100,.attribute=0x1000};
 static int input_fixture;
+static unsigned utility_exports[]={0xa25e0194,0xea446cd5,0x88004000,0x88004010};
+static SceLibraryEntryTable utility_entry={.len=sizeof(SceLibraryEntryTable)/4,.stubcount=2,.libname="sceUtility_private",.entrytable=utility_exports};
+static SceModule utility_module={.ent_top=&utility_entry,.ent_size=sizeof(utility_entry),.text_addr=0x88004000,.text_size=0x100,.attribute=0x1000};
 static int MergedPad(SceCtrlData *pad,int n){(void)n;pad->Buttons=PSP_CTRL_LTRIGGER|PSP_CTRL_RTRIGGER|PSP_CTRL_TRIANGLE;return 1;}
 static void *dep_block;static unsigned dep_block_bytes;
 static int mode_v,w_v,h_v,edram,ge_busy,resize_calls,enqueue_calls,fail_enqueue,open_during_render;
@@ -33,7 +39,7 @@ static void Reset(void){
  mode_v=0x2d2;w_v=480;h_v=272;edram=0x200000;
  game_frame=(Frame){0x0948fb20,512,3,0};layer_frame=(Frame){0,512,3,0};source=game_frame;original0=layer_frame;
  real_mode=FakeMode;get_mode=FakeGetMode;get_size=FakeSize;get_hw_size=FakeHwSize;set_size=FakeSetSize;
- get_frame=FakeGetFrame;real_frame=FakeFrame;home_status=FakeStatus;ready_buffer=NULL;logpath=NULL;
+ get_frame=FakeGetFrame;real_frame=FakeFrame;home_status=FakeStatus;utility_type=FakeUtilityType;utility_status=FakeUtilityStatus;utility_kind=utility_state=0;ready_buffer=NULL;logpath=NULL;
  assert(InitGeMemory()==0);
  assert((uintptr_t)packet>=0x08800000u&&(uintptr_t)packet+sizeof(*packet)<=0x0c000000u);
  assert((uintptr_t)ge_context>=(uintptr_t)packet+sizeof(*packet));
@@ -126,6 +132,38 @@ int main(void){
  alloc_fail=1;assert(InitGeMemory()<0&&gpu_memory<0);alloc_fail=0;
  bad_head=1;assert(InitGeMemory()<0&&gpu_memory<0&&user_block==NULL);bad_head=0;
  assert(InitGeMemory()==0&&FreeGeMemory()==0);
+ // Only the exact read-only leaf getters may be used, never callback APIs.
+ input_fixture=2;ResolveUtilityStatus();assert((uintptr_t)utility_type==0x88004000&&(uintptr_t)utility_status==0x88004010);
+ input_fixture=3;ResolveUtilityStatus();assert(!utility_type&&!utility_status);input_fixture=0;
+ // Burnout-style savedata: utility enters without the HOME status bit,
+ // changes physical mode, renders into priority 2, then shuts down.
+ for(int state=1;state<=5;state++){
+  Reset();utility_kind=1;utility_state=state;assert(UtilityVisible()==(state!=4));
+ }
+ Reset();AutoControl(0,0);assert(active);
+ utility_kind=1;utility_state=1;assert(MenuVisible()&&!ScalingVisible());
+ assert(ModeHook(0x1d2,720,480)==0&&!abort_requested&&!active&&home_paused);
+ AutoControl(MenuVisible(),100);assert(home_output_restored&&!auto_fault);
+ game_frame=(Frame){0x09400000,512,3,0};utility_state=2;
+ assert(RenderHome()==0&&home_scaled_ready&&mode_v==0xd2&&w_v==720&&h_v==480);
+ unsigned utility_tex=0,utility_high=0;
+ for(unsigned i=0;i<packet->count;i++){unsigned c=packet->commands[i]>>24,v=packet->commands[i]&0xffffff;if(c==0xa0)utility_tex=v;if(c==0xa8)utility_high=(v&0xf0000)<<8;}
+ assert((utility_tex|utility_high)==game_frame.address);
+ assert(ModeHook(0x2d2,480,272)==0&&mode_v==0x2d2&&!home_scaled_ready&&!auto_fault);
+ AutoControl(MenuVisible(),200);assert(RenderHome()==0&&home_scaled_ready);
+ utility_state=3;AutoControl(MenuVisible(),300);assert(!active&&home_paused);
+ // A nested HOME menu must not resume the game while the utility is active.
+ menu_bits=0x100;AutoControl(MenuVisible(),400);menu_bits=0;
+ AutoControl(MenuVisible(),500);assert(!active&&home_paused);
+ utility_state=4;assert(!MenuVisible());layer_frame=(Frame){0,512,3,0};
+ AutoControl(MenuVisible(),300500);assert(active&&!home_paused&&!auto_fault&&mode_v==0xd2&&display_frame.stride==TV_STRIDE);
+ // A subsequent dialog works too and cancellation resumes with the preset.
+ utility_kind=3;utility_state=2;filter_mode=FILTER_CRT;
+ AutoControl(MenuVisible(),400000);assert(!active);utility_state=0;utility_kind=0;
+ AutoControl(MenuVisible(),700000);assert(active&&filter_mode==FILTER_CRT&&!auto_fault);
+ // Utility already open at startup delays activation without a fault latch.
+ Reset();utility_kind=1;utility_state=2;AutoControl(MenuVisible(),0);assert(!active&&!auto_fault&&!reserved);
+ utility_state=0;utility_kind=0;AutoControl(MenuVisible(),100000);assert(active);
  // Validate the same kernel merged positive-peek target as Impose uses.
  Reset();input_fixture=1;ResolveInput();assert((uintptr_t)merged_peek==0x88002000u);
  input_owner.attribute=0;ResolveInput();assert(!merged_peek);input_owner.attribute=0x1000;
@@ -157,11 +195,11 @@ int main(void){
  filter_mode=FILTER_DITHER;pad_buttons=0;PollFilter(0,109);alloc_fail=1;
  pad_buttons=chord;PollFilter(0,110);assert(filter_mode==FILTER_SHARP&&dep_memory<0);alloc_fail=0;
  assert(FreeGeMemory()==0);
- puts("V1 auto/HOME and GE user-memory checks passed: immediate default-on, TV/source gating, busy retry, fault latch, NODS native status, NULL/kernel output restoration, native menu RGBA5551 GPU scaling, reboot quiesce/scanout cleanup, preserved HOME canvas/stride/format, no HOME resize, automatic resume and in-flight HOME suppression.");
+ puts("V8 utility dialog/HOME and GE user-memory checks passed: immediate default-on, TV/source gating, busy retry, fault latch, NODS native status, NULL/kernel output restoration, native menu RGBA5551 GPU scaling, reboot quiesce/scanout cleanup, preserved HOME canvas/stride/format, no HOME resize, automatic resume and in-flight HOME suppression.");
 }
 unsigned TestRead(unsigned off){return off==0?3:off==0x1c?2160:off==0x2c?480:0;}
 int sceKernelCpuSuspendIntr(void){return 0;}void sceKernelCpuResumeIntr(int n){(void)n;}
-SceModule *sceKernelFindModuleByName(const char *n){return input_fixture&&!strcmp(n,"sceImpose_Driver")?&input_module:NULL;}
+SceModule *sceKernelFindModuleByName(const char *n){if(input_fixture>=2&&!strcmp(n,"sceUtility_Driver"))return &utility_module;return input_fixture==1&&!strcmp(n,"sceImpose_Driver")?&input_module:NULL;}
 void sceKernelDcacheWritebackInvalidateAll(void){}void sceKernelIcacheInvalidateAll(void){}
 void sceKernelDcacheWritebackRange(const void *p,unsigned n){(void)p;(void)n;}
 unsigned pspSdkSetK1(unsigned n){return n;}
@@ -214,4 +252,11 @@ int sceDisplayGetVcount(void){return clock_us/16667u;}
 int sceCtrlPeekBufferPositive(SceCtrlData *pad,int n){assert(n==1);pad->Buttons=pad_buttons;return 1;}
 SceModule *sceKernelFindModuleByAddress(unsigned a){return input_fixture&&a==0x88002000?&input_owner:NULL;}
 unsigned sctrlFindImportByNID(SceModule *m,char *lib,unsigned nid){(void)m;(void)lib;(void)nid;return input_fixture?0x88001000:0;}
-unsigned TestCodeWord(unsigned a){return a==0x88001000?0x0a000800:0;}
+unsigned TestCodeWord(unsigned a){
+ if(input_fixture>=2&&a>=0x88004000&&a<0x88004020){unsigned off=(a-0x88004000)%16;
+  if(off==0)return 0x3c048800;
+  if(off==4)return input_fixture==3?0x0c000000:0x03e00008;
+  if(off==8)return 0x8c8266cc;
+ }
+ return a==0x88001000?0x0a000800:0;
+}

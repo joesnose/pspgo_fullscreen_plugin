@@ -1,10 +1,32 @@
-# PSP Go Fullscreen Plugin — revision 7
+# PSP Go Fullscreen Plugin — revision 8
 
-[Download R7 build and source](pspgo-tv-scale-v1-auto-home-r7.zip) · [Plugin PRX](PSPGoTVScale.prx)
+[Download R8 build and source](pspgo-tv-scale-v1-auto-home-r8.zip) · [Plugin PRX](PSPGoTVScale.prx)
 
 Immediate fullscreen scaling with ten live filters. Retains revision 6's
 user-confirmed HOME rendering and return-to-VSH handling, and the user-memory
 GPU fix that removes the opicker dependency.
+
+## Save/load dialog fix (R8)
+
+Detects standard PSP utility dialogs independently of HOME, addressing the
+reported Burnout save/load transition that left fullscreen disabled. The display
+hook allows the dialog's temporary mode change without treating it as a fatal
+unsupported game layout. The worker pauses game substitution, scales a supported
+native dialog buffer with bilinear filtering, and resumes the selected game
+filter after shutdown/cancellation. Dialogs using the game framebuffer are read
+from priority 2 when no native priority-0 layer exists. Nested HOME and repeated
+dialogs remain paused until both close.
+
+Utility detection uses export-resolved private type/status getters only after
+validating their complete read-only leaf bodies. It does not call public
+SavedataGetStatus, which can invoke an application callback on this firmware.
+Unavailable or unrecognized getters disable this detection; no firmware data
+addresses are guessed. Logs include utility_status support, utility_dialog
+transitions and system_dialog_closed,scaling_resumed.
+
+Host tests cover these transitions; Burnout and other games still need a real
+PSP Go test. If fullscreen remains lost, copy PSPGoTVScale.txt after reproducing
+it and before launching another game.
 
 ## Install and control
 
@@ -70,7 +92,7 @@ progressive component 480p, games with supported lower-2-MiB framebuffer layouts
 The existing game image is stretched; game world geometry is not extended.
 
 Log: ef0:/PSPGoTVScale.txt (ms0:/ fallback). Copy it before opening another game.
-Filter changes appear as filter records; banner identifies auto_home_r7.
+Filter changes appear as filter records; banner identifies auto_home_r8.
 
 ## Build and verification
 
@@ -95,4 +117,4 @@ reference for all four formats, edge rows/alpha/padding, notice bounds, merged
 input validation, one change per press, HOME suppression, optional allocation
 failure, processed user-RAM texture submission, and the existing HOME/reboot
 regressions. Host tests use fake PSP APIs and do not execute actual GE drawing
-or firmware scheduling. Revision 7 has not been tested on real hardware here.
+or firmware scheduling. Revision 8 has not been tested on real hardware here.

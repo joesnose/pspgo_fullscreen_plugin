@@ -18,7 +18,7 @@
 #include <stddef.h>
 #include "render.h"
 #include "effects.h"
-PSP_MODULE_INFO("PSPGoTVScaleV1Auto",0x1000,1,7);
+PSP_MODULE_INFO("PSPGoTVScaleV1Auto",0x1000,1,8);
 extern void sctrlHENPatchSyscall(void *,void *);
 static const char *logpath;
 #include "logger.inc"
@@ -61,13 +61,20 @@ static unsigned draws,timeouts,invalid_frames;
 static uint64_t wait_total;
 static unsigned max_wait;
 static int filter_mode=FILTER_SOFT;
-static IntFn home_status;
+static IntFn home_status,utility_type,utility_status;
 static volatile int home_paused,home_scaled_ready,reboot_exit,reboot_late;
 static int reboot_joined,worker_done;
 static int home_output_restored,auto_fault;
 static unsigned next_auto,last_home_resolve,auto_ready_since;
 static int auto_ready_wait;
-static int MenuVisible(void){return home_status&&(home_status()&0x100)!=0;}
+static int HomeVisible(void){return home_status&&(home_status()&0x100)!=0;}
+static int UtilityVisible(void){
+  if(!utility_type||!utility_status||utility_type()<=0)return 0;
+  int status=utility_status();
+  // 4 is completed shutdown; no display owner remains. 5 is active/abort.
+  return status==1||status==2||status==3||status==5;
+}
+static int MenuVisible(void){return HomeVisible()||UtilityVisible();}
 static int ScalingVisible(void){return running&&!reboot_exit&&active&&!home_paused&&!MenuVisible();}
 static int MenuScalingVisible(void){return running&&!reboot_exit&&home_paused&&home_scaled_ready&&MenuVisible();}
 
@@ -182,6 +189,25 @@ static void ResolveHomeStatus(void) {
      w[2]==0x03e00008u&&w[3]==0x8c8200a4u)home_status=(IntFn)(uintptr_t)g;
 #endif
 }
+/* Firmware private getters are pure reads, unlike the public savedata status
+ * API which can invoke an application callback. Guard the complete leaf body;
+ * no utility init/update/shutdown calls or offsets into firmware data. */
+static IntFn UtilityGetter(unsigned nid) {
+  unsigned g=Find("sceUtility_Driver","sceUtility_private",nid);
+  SceModule *m=sceKernelFindModuleByName("sceUtility_Driver");
+  if(!g||!m||!(m->attribute&0x1000)||m->text_size<12||g<m->text_addr||g-m->text_addr>m->text_size-12)return NULL;
+#ifdef HOST_TEST
+  unsigned a=TestCodeWord(g),b=TestCodeWord(g+4),c=TestCodeWord(g+8);
+#else
+  const unsigned *w=(const unsigned *)(uintptr_t)g;unsigned a=w[0],b=w[1],c=w[2];
+#endif
+  if((a&0xffff0000u)!=0x3c040000u||b!=0x03e00008u||(c&0xffff0000u)!=0x8c820000u)return NULL;
+  return (IntFn)(uintptr_t)g;
+}
+static void ResolveUtilityStatus(void) {
+  utility_type=UtilityGetter(0xa25e0194);
+  utility_status=UtilityGetter(0xea446cd5);
+}
 static unsigned Read(unsigned off){
 #ifdef HOST_TEST
   return TestRead(off);
@@ -216,6 +242,12 @@ static int FrameHook(int pri,void *ptr,int stride,int format,int sync) {
   return real_frame(pri,ptr,stride,format,sync);
 }
 static int ModeHook(int mode,int width,int height) {
+  if(running&&!reboot_exit&&reserved&&UtilityVisible()&&!HomeVisible()) {
+    // Utility dialogs own this transient mode change. Quiesce substitution
+    // immediately; the worker drains GE and resumes through the menu path.
+    active=0;home_paused=1;home_scaled_ready=0;
+    return real_mode(mode,width,height);
+  }
   if(ScalingVisible()||MenuScalingVisible()) {
     if(mode==0xd2&&width==720&&height==480)return real_mode(mode,width,height);
     if((mode==0||mode==0x2d2||mode==0x3d2)&&width==480&&height==272) {
@@ -402,6 +434,13 @@ static int PauseForHome(void) {
 static int RenderHome(void) {
   if(!home_paused||!reserved||!home_output_restored||!MenuVisible()||reboot_exit)return 1;
   Frame f=Snapshot(&original0);f.address&=0x1fffffffu;
+  if(!HomeVisible()&&UtilityVisible()&&(!f.address||!ValidFrame(f))) {
+    // Save/load UI normally draws into the game framebuffer, unlike HOME's
+    // priority-0 layer. Query the current buffer, not a cached game image.
+    void *ptr=NULL;int stride=0,format=-1;
+    if(get_frame(2,&ptr,&stride,&format,0)<0)return 1;
+    f=(Frame){(uintptr_t)ptr&0x1fffffffu,stride,format,0};
+  }
   // Device log identifies a native 480x272 menu in a 512-stride buffer.
   if(f.stride!=512||!ValidFrame(f))return 1;
   unsigned target=output_index^1;
@@ -447,7 +486,7 @@ static int ResumeAfterHome(void) {
   int ret=real_mode(0xd2,720,480);
   if(ret>=0&&!MenuVisible())ret=real_frame(0,ready_buffer,TV_STRIDE,0,1);
   if(ret<0){active=0;home_paused=1;return -1;}
-  output_index=target;logline("home_closed,scaling_resumed\n");return 0;
+  output_index=target;logline("system_dialog_closed,scaling_resumed\n");return 0;
 }
 static void AutoControl(int menu,unsigned now) {
   if(auto_fault)return;
@@ -522,19 +561,21 @@ static int MainThread(SceSize argc,void *argv) {
   for(unsigned i=0;i<2;++i){SceUID fd=sceIoOpen(paths[i],PSP_O_WRONLY|PSP_O_CREAT|PSP_O_TRUNC,0666);if(fd>=0){logpath=paths[i];sceIoClose(fd);break;}}
   if(!logpath)return 0;
   unsigned fw=sceKernelDevkitVersion();
-  logline("PSPGoTVScale,base,alpha1,variant,auto_home_r7,model,%d,devkit,0x%08X\n",sceKernelGetModel(),fw);
+  logline("PSPGoTVScale,base,alpha1,variant,auto_home_r8,model,%d,devkit,0x%08X\n",sceKernelGetModel(),fw);
   if(sceKernelGetModel()!=4||(fw!=0x06060010&&fw!=0x06060110)){logline("unsupported_model_or_firmware\n");return 0;}
   filter_mode=FILTER_SOFT;logline("filter,%s\n",FilterName(filter_mode));
   if(InitGeMemory()<0)return 0;
   if(InstallHooks()<0){FreeGeMemory();return 0;}
-  ResolveHomeStatus();ResolveInput();
-  logline("ready_default_scaled,filter_shortcut,L_R_Triangle,home_status,%u\n",home_status!=NULL);
+  ResolveHomeStatus();ResolveUtilityStatus();ResolveInput();
+  logline("ready_default_scaled,filter_shortcut,L_R_Triangle,home_status,%u,utility_status,%u\n",home_status!=NULL,utility_type!=NULL&&utility_status!=NULL);
   unsigned last_report=sceKernelGetSystemTimeLow();
   last_home_resolve=last_report;
   while(running) {
     unsigned now=sceKernelGetSystemTimeLow();
-    if(now-last_home_resolve>=500000u){ResolveHomeStatus();ResolveInput();last_home_resolve=now;}
+    if(now-last_home_resolve>=500000u){ResolveHomeStatus();ResolveUtilityStatus();ResolveInput();last_home_resolve=now;}
     int menu=MenuVisible();
+    static int last_utility;int utility=UtilityVisible();
+    if(utility!=last_utility){logline("utility_dialog,active,%u,type,%d,status,%d\n",utility,utility_type?utility_type():-1,utility_status?utility_status():-1);last_utility=utility;}
     if(menu&&(active||reserved)){active=0;home_paused=1;}
     if(pending_list>=0) {
       if(WaitList(1000)<0){sceKernelDelayThread(10000);continue;}
