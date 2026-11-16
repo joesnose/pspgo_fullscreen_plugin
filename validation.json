@@ -1,9 +1,9 @@
 {
   "name": "PSP Go TV Scale Auto + HOME",
-  "revision": 8,
-  "baseline": "R7 live filters with user-confirmed R6 HOME lifecycle",
+  "revision": 9,
+  "baseline": "R8 utility detection; R7 filters; previously working HOME/reboot lifecycle",
   "psp_build": "passed -Wall -Wextra -Werror",
-  "host_tests": "ASan/UBSan: packet 144 cases; filter 160 cases; independent full-frame deposterise reference for four formats; notice bounds; actual-source controller, allocation, HOME and reboot checks; utility getters accept leaf/read-only code and reject calls; savedata init/visible/finished/shutdown, transient mode, priority2 UI, nested HOME, repeated dialogs, startup during dialog",
+  "host_tests": "ASan/UBSan actual-source HOME/utility/GE memory regressions, including invalid owned ID busy/idle, retained memory until global idle, discarded output, no timeout/fault latch on retirement, native utility mode, zero scaler submissions during utility phases, nested HOME, repeated dialogs, cancellation and startup inside dialog",
   "hardware_tested": false,
   "default_filter": "Soft",
   "control": "Hold L+R, tap Triangle; NODS default L1+R1+Triangle",
@@ -21,7 +21,11 @@
     "Deposterise"
   ],
   "deposterise": "CPU separable edge-aware smoothing, 12-level RGB threshold, optional 544 KiB user-partition buffer",
-  "remaining": "Real PSP Go Burnout save/load cancellation/completion, other standard utility dialogs, HOME and exit regression",
+  "remaining": "Real PSP Go Burnout save/load completion/cancellation and HOME/exit regression",
   "unchanged": "R7 filters/controls and R6 reboot lifecycle; no game-specific or NODS changes",
-  "change": "Recognize system utility dialogs via guarded pure-read type/status exports; allow transient mode changes, scale priority-2 native UI when priority0 absent, resume selected game scaling on close"
+  "change": "Leave utility UI native without scaler jobs, resume fullscreen on close; idle-fenced retirement and retry of invalid GE list IDs, without permanent fault or publishing a retired frame",
+  "evidence": {
+    "r8_device_log": "utility_status=1, type1/status1, then list_sync_error 0x80000100 repeated through utility shutdown status4; later disabled with timeouts1",
+    "firmware_reference": "uofw ge sceGeListSync returns SCE_ERROR_INVALID_ID for retired/invalid queue states; errors.h defines 0x80000100"
+  }
 }

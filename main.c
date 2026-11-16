@@ -18,7 +18,7 @@
 #include <stddef.h>
 #include "render.h"
 #include "effects.h"
-PSP_MODULE_INFO("PSPGoTVScaleV1Auto",0x1000,1,8);
+PSP_MODULE_INFO("PSPGoTVScaleV1Auto",0x1000,1,9);
 extern void sctrlHENPatchSyscall(void *,void *);
 static const char *logpath;
 #include "logger.inc"
@@ -56,7 +56,7 @@ static SceUID gpu_memory=-1;
 static GeWorkspace *gpu_workspace;
 static ScalePacket *packet;
 static PspGeContext *ge_context;
-static int pending_list=-1;
+static int pending_list=-1,list_invalid_logged;
 static unsigned draws,timeouts,invalid_frames;
 static uint64_t wait_total;
 static unsigned max_wait;
@@ -64,7 +64,7 @@ static int filter_mode=FILTER_SOFT;
 static IntFn home_status,utility_type,utility_status;
 static volatile int home_paused,home_scaled_ready,reboot_exit,reboot_late;
 static int reboot_joined,worker_done;
-static int home_output_restored,auto_fault;
+static int home_output_restored,utility_native_ready,auto_fault;
 static unsigned next_auto,last_home_resolve,auto_ready_since;
 static int auto_ready_wait;
 static int HomeVisible(void){return home_status&&(home_status()&0x100)!=0;}
@@ -317,6 +317,18 @@ static int WaitList(unsigned timeout_us) {
     if(reboot_exit&&reboot_late)return -1;
     int status=sceGeListSync(pending_list,1);
     if(status==PSP_GE_LIST_DONE||status==PSP_GE_LIST_CANCEL_DONE){pending_list=-1;return 0;}
+    if((unsigned)status==0x80000100u) {
+      // A utility GE queue reset can retire our ID. An invalid ID alone is
+      // not a GPU fence: retain storage until a nonblocking global-idle poll.
+      int intr=sceKernelCpuSuspendIntr();
+      int idle=sceGeDrawSync(1)==PSP_GE_LIST_DONE;
+      if(idle)pending_list=-1;
+      sceKernelCpuResumeIntr(intr);
+      if(!list_invalid_logged){logline("list_id_retired,waiting_for_idle,%u\n",!idle);list_invalid_logged=1;}
+      if(idle){logline("list_id_retired,idle_fence_passed\n");return 1;}
+      if(sceKernelGetSystemTimeLow()-start>=timeout_us)return -2;
+      sceKernelDelayThread(250);continue;
+    }
     if(status<0){logline("list_sync_error,0x%08X\n",(unsigned)status);return -1;}
     if((unsigned)(sceKernelGetSystemTimeLow()-start)>=timeout_us) {
       // A queued list can be removed without cancelling the game's work.
@@ -328,16 +340,24 @@ static int WaitList(unsigned timeout_us) {
 }
 static int RenderWithFilter(Frame f,unsigned target,int selected_filter) {
   if(!running||reboot_exit||pending_list>=0)return -1;
+  if(UtilityVisible())return -2; // utility renderer may reset the shared GE queue
   if(!packet||!ge_context)return -1;
   if(BuildFilteredScalePacket(packet,f,target,aspect,selected_filter)<0){++invalid_frames;return -1;}
   sceKernelDcacheWritebackRange(packet,sizeof(*packet));
   PspGeListArgs args={sizeof(args),ge_context,0,NULL};
+  list_invalid_logged=0;
   pending_list=sceGeListEnQueue(packet->commands,NULL,-1,&args);
   if(pending_list<0){logline("enqueue_error,0x%08X\n",(unsigned)pending_list);return -1;}
   unsigned start=sceKernelGetSystemTimeLow();
   int ret=WaitList(100000);
   unsigned elapsed=sceKernelGetSystemTimeLow()-start;
   wait_total+=elapsed;if(elapsed>max_wait)max_wait=elapsed;
+  if(ret==1||ret==-2) {
+    // The result was discarded, not completed. Re-enter the paused restore
+    // path instead of publishing an unfinished buffer or latching a fault.
+    active=0;home_paused=reserved;home_scaled_ready=0;home_output_restored=0;
+    next_auto=sceKernelGetSystemTimeLow()+300000u;return -2;
+  }
   if(ret<0){++timeouts;abort_requested=1;return -1;}
   ++draws;return 0;
 }
@@ -397,7 +417,9 @@ static int Activate(void) {
   if(ret>0)return 1;
   if(ret<0){reserved=0;logline("activation_rejected,ge_busy_or_edram_error\n");return -1;}
   restore_mode=mode;abort_requested=0;output_index=0;
-  if(Render(f,0)<0){if(pending_list<0)Deactivate();return -1;}
+  int rendered=Render(f,0);
+  if(rendered==-2){home_paused=reserved;home_output_restored=0;next_auto=sceKernelGetSystemTimeLow()+300000u;return 0;}
+  if(rendered<0){if(pending_list<0)Deactivate();return -1;}
   ready_buffer=(void *)(0x04000000u+TV_VRAM_OFFSET);
   if(MenuVisible()){home_paused=1;home_output_restored=1;return 0;}
   active=1;
@@ -416,7 +438,8 @@ static int ReadyToAutoStart(void) {
 }
 static int PauseForHome(void) {
   active=0;home_paused=1;
-  if(home_output_restored||!reserved)return 0;
+  int utility=UtilityVisible();
+  if(!reserved||(home_output_restored&&(!utility||utility_native_ready)))return 0;
   if(pending_list>=0)return -1;
   // Impose reads the physical layout through its direct kernel import and
   // prepares its menu for that canvas. Do not reset it to the game geometry.
@@ -425,6 +448,13 @@ static int PauseForHome(void) {
   if(f.address&&!ValidOutputFrame(f))return -1;
   int ret=real_frame(0,(void *)(uintptr_t)f.address,f.stride,f.format,1);
   if(ret<0)return ret;
+  if(utility&&!utility_native_ready) {
+    // Use the ordinary game-sized TV scanout while the utility owns GE.
+    // Keep the workspace reserved; neither enqueue jobs nor shrink EDRAM.
+    ret=real_mode(restore_mode,480,272);if(ret<0)return ret;
+    utility_native_ready=1;home_scaled_ready=0;
+    logline("utility_native_output,mode,0x%X,width,480,height,272\n",restore_mode);
+  }
   home_output_restored=1;
   int mode=-1,w=0,h=0;get_mode(&mode,&w,&h);
   logline("home_paused,menu_layout_preserved,mode,0x%X,width,%d,height,%d,layer,0x%08X,stride,%d,format,%d\n",
@@ -432,19 +462,15 @@ static int PauseForHome(void) {
   return 0;
 }
 static int RenderHome(void) {
+  if(UtilityVisible())return 1; // No scaler GE submissions during any utility phase.
   if(!home_paused||!reserved||!home_output_restored||!MenuVisible()||reboot_exit)return 1;
   Frame f=Snapshot(&original0);f.address&=0x1fffffffu;
-  if(!HomeVisible()&&UtilityVisible()&&(!f.address||!ValidFrame(f))) {
-    // Save/load UI normally draws into the game framebuffer, unlike HOME's
-    // priority-0 layer. Query the current buffer, not a cached game image.
-    void *ptr=NULL;int stride=0,format=-1;
-    if(get_frame(2,&ptr,&stride,&format,0)<0)return 1;
-    f=(Frame){(uintptr_t)ptr&0x1fffffffu,stride,format,0};
-  }
   // Device log identifies a native 480x272 menu in a 512-stride buffer.
   if(f.stride!=512||!ValidFrame(f))return 1;
   unsigned target=output_index^1;
-  if(RenderWithFilter(f,target,FILTER_SOFT)<0)return -1;
+  int rendered=RenderWithFilter(f,target,FILTER_SOFT);
+  if(rendered==-2)return 1;
+  if(rendered<0)return -1;
   if(!running||reboot_exit||!MenuVisible())return 1;
   int mode=-1,w=0,h=0;get_mode(&mode,&w,&h);
   if(mode!=0xd2||w!=720||h!=480) {
@@ -463,6 +489,7 @@ static void ReleaseHomeOutput(void) {
   if(!f.address||ValidOutputFrame(f))real_frame(0,(void *)(uintptr_t)f.address,f.stride,f.format,1);
 }
 static int ResumeAfterHome(void) {
+  if(MenuVisible())return 1;
   ReleaseHomeOutput();
   if(!reserved)return -1;
   int mode=-1,w=0,h=0,stride=0,format=-1;void *ptr=NULL;
@@ -479,10 +506,12 @@ static int ResumeAfterHome(void) {
   Capture(&original0,ptr,stride,format);
   if(mode==0x2d2||mode==0x3d2)restore_mode=mode;
   unsigned target=output_index^1;
-  if(Render(f,target)<0)return -1;
+  int rendered=Render(f,target);
+  if(rendered==-2)return 1;
+  if(rendered<0)return -1;
   if(MenuVisible())return 1;
   ready_buffer=(void *)(uintptr_t)(0x04000000u+TV_VRAM_OFFSET+target*TV_FRAME_BYTES);
-  home_paused=0;home_scaled_ready=0;home_output_restored=0;active=1;
+  home_paused=0;home_scaled_ready=0;home_output_restored=0;utility_native_ready=0;active=1;
   int ret=real_mode(0xd2,720,480);
   if(ret>=0&&!MenuVisible())ret=real_frame(0,ready_buffer,TV_STRIDE,0,1);
   if(ret<0){active=0;home_paused=1;return -1;}
@@ -561,7 +590,7 @@ static int MainThread(SceSize argc,void *argv) {
   for(unsigned i=0;i<2;++i){SceUID fd=sceIoOpen(paths[i],PSP_O_WRONLY|PSP_O_CREAT|PSP_O_TRUNC,0666);if(fd>=0){logpath=paths[i];sceIoClose(fd);break;}}
   if(!logpath)return 0;
   unsigned fw=sceKernelDevkitVersion();
-  logline("PSPGoTVScale,base,alpha1,variant,auto_home_r8,model,%d,devkit,0x%08X\n",sceKernelGetModel(),fw);
+  logline("PSPGoTVScale,base,alpha1,variant,auto_home_r9,model,%d,devkit,0x%08X\n",sceKernelGetModel(),fw);
   if(sceKernelGetModel()!=4||(fw!=0x06060010&&fw!=0x06060110)){logline("unsupported_model_or_firmware\n");return 0;}
   filter_mode=FILTER_SOFT;logline("filter,%s\n",FilterName(filter_mode));
   if(InitGeMemory()<0)return 0;
@@ -575,10 +604,10 @@ static int MainThread(SceSize argc,void *argv) {
     if(now-last_home_resolve>=500000u){ResolveHomeStatus();ResolveUtilityStatus();ResolveInput();last_home_resolve=now;}
     int menu=MenuVisible();
     static int last_utility;int utility=UtilityVisible();
-    if(utility!=last_utility){logline("utility_dialog,active,%u,type,%d,status,%d\n",utility,utility_type?utility_type():-1,utility_status?utility_status():-1);last_utility=utility;}
+    if(utility!=last_utility){logline("utility_dialog,active,%u,type,%d,status,%d\n",utility,utility_type?utility_type():-1,utility_status?utility_status():-1);last_utility=utility;if(utility)utility_native_ready=0;}
     if(menu&&(active||reserved)){active=0;home_paused=1;}
     if(pending_list>=0) {
-      if(WaitList(1000)<0){sceKernelDelayThread(10000);continue;}
+      if(WaitList(1000)<0||pending_list>=0){sceKernelDelayThread(10000);continue;}
     }
     PollFilter(menu,now);
     if(active&&!TvActive())abort_requested=1;

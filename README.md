@@ -1,32 +1,42 @@
-# PSP Go Fullscreen Plugin — revision 8
+# PSP Go Fullscreen Plugin — revision 9
 
-[Download R8 build and source](pspgo-tv-scale-v1-auto-home-r8.zip) · [Plugin PRX](PSPGoTVScale.prx)
+[Download R9 build and source](pspgo-tv-scale-v1-auto-home-r9.zip) · [Plugin PRX](PSPGoTVScale.prx)
 
 Immediate fullscreen scaling with ten live filters. Retains revision 6's
 user-confirmed HOME rendering and return-to-VSH handling, and the user-memory
 GPU fix that removes the opicker dependency.
 
-## Save/load dialog fix (R8)
+## Save/load dialog recovery (R9)
 
-Detects standard PSP utility dialogs independently of HOME, addressing the
-reported Burnout save/load transition that left fullscreen disabled. The display
-hook allows the dialog's temporary mode change without treating it as a fatal
-unsupported game layout. The worker pauses game substitution, scales a supported
-native dialog buffer with bilinear filtering, and resumes the selected game
-filter after shutdown/cancellation. Dialogs using the game framebuffer are read
-from priority 2 when no native priority-0 layer exists. Nested HOME and repeated
-dialogs remain paused until both close.
+The uploaded R8 Burnout log confirms utility detection works, followed by
+list_sync_error 0x80000100 (invalid GE display-list ID) during utility startup.
+R8 kept that ID pending, repeatedly polled it, and latched a scaling fault.
 
-Utility detection uses export-resolved private type/status getters only after
-validating their complete read-only leaf bodies. It does not call public
-SavedataGetStatus, which can invoke an application callback on this firmware.
-Unavailable or unrecognized getters disable this detection; no firmware data
-addresses are guessed. Logs include utility_status support, utility_dialog
-transitions and system_dialog_closed,scaling_resumed.
+R9 leaves save/load and other standard utility screens at their native game-sized
+TV layout while they own the shared GPU queue. It submits no scaler jobs during
+utility init, visible, finished or shutdown phases. Fullscreen resumes with the
+selected game filter after the utility closes or is cancelled. HOME opened while
+a utility is running also uses native output until the utility closes; ordinary
+HOME rendering outside utilities retains the previously working scaler path.
 
-Host tests cover these transitions; Burnout and other games still need a real
-PSP Go test. If fullscreen remains lost, copy PSPGoTVScale.txt after reproducing
-it and before launching another game.
+An invalid owned list ID is treated as a retired queue entry only after a
+nonblocking global GPU-idle poll succeeds. Until then the packet, processed
+pixels and context remain reserved. The retired image is discarded, not
+published as complete; the paused restore path retries without a permanent
+fault. There are no global queue resets or cancellations of the game's work.
+Repeated invalid-ID errors are logged once per submission rather than every loop.
+Other errors retain the existing fault handling.
+
+Utility detection still uses export-resolved private type/status getters with
+validated read-only leaf bodies, without application callback APIs or guessed
+data addresses. If these getters are unavailable or unrecognized, detection is
+unavailable. Log banner: auto_home_r9. Look for utility_native_output,
+list_id_retired,idle_fence_passed and system_dialog_closed,scaling_resumed.
+
+Host regressions reproduce the reported invalid-ID failure with both busy and
+idle GPU states and verify native dialog handling, no dialog submissions,
+repeated/cancelled dialogs, startup during a dialog, nested HOME and resumed
+fullscreen. Real Burnout save/load behavior still needs a PSP Go test.
 
 ## Install and control
 
@@ -92,7 +102,7 @@ progressive component 480p, games with supported lower-2-MiB framebuffer layouts
 The existing game image is stretched; game world geometry is not extended.
 
 Log: ef0:/PSPGoTVScale.txt (ms0:/ fallback). Copy it before opening another game.
-Filter changes appear as filter records; banner identifies auto_home_r8.
+Filter changes appear as filter records; banner identifies auto_home_r9.
 
 ## Build and verification
 
@@ -117,4 +127,4 @@ reference for all four formats, edge rows/alpha/padding, notice bounds, merged
 input validation, one change per press, HOME suppression, optional allocation
 failure, processed user-RAM texture submission, and the existing HOME/reboot
 regressions. Host tests use fake PSP APIs and do not execute actual GE drawing
-or firmware scheduling. Revision 8 has not been tested on real hardware here.
+or firmware scheduling. Revision 9 has not been tested on real hardware here.
