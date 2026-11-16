@@ -40,7 +40,22 @@ static int FakeSavedataInit(void *params){
  utility_kind=save_returns_status?1:0;utility_state=save_returns_status;
  return save_result;
 }
+static int write_fd,write_calls,write_result,async_result_code,close_result;
+static const void *write_data;
+static unsigned write_size;
+static int64_t *async_result_pointer;
+static int FakeWrite(SceUID fd,const void *data,SceSize size){
+ assert(fd==write_fd&&data==write_data&&size==write_size&&current_k1==0x100000);
+ write_calls++;return write_result;
+}
+static int FakeAsync(SceUID fd,int64_t *result){assert(fd==write_fd&&result==async_result_pointer&&current_k1==0x100000);return async_result_code;}
+static int FakeAsyncStat(SceUID fd,int poll,int64_t *result){assert(poll==1);return FakeAsync(fd,result);}
+static int FakeClose(SceUID fd){assert(fd==write_fd&&current_k1==0x100000);return close_result;}
 static void Reset(void){
+ memset(async_writes,0,sizeof(async_writes));async_overflow=write_calls=0;
+ file_hooks[0].original=file_hooks[1].original=(uintptr_t)FakeWrite;
+ for(int i=2;i<=4;i++)file_hooks[i].original=(uintptr_t)FakeAsync;
+ file_hooks[5].original=(uintptr_t)FakeAsyncStat;file_hooks[6].original=(uintptr_t)FakeClose;
  save_gate=save_entries=save_quiet_until=save_worker_step=save_calls=current_k1=0;real_savedata_init=FakeSavedataInit;
  pending_list=-1;assert(FreeDepMemory()==0);assert(FreeGeMemory()==0);alloc_fail=bad_head=0;
  running=1;active=reserved=abort_requested=home_paused=home_scaled_ready=reboot_exit=reboot_late=reboot_joined=worker_done=home_output_restored=auto_fault=auto_ready_wait=0;
@@ -175,6 +190,37 @@ int main(void){
  // Utility already open at startup delays activation without a fault latch.
  Reset();utility_kind=1;utility_state=2;AutoControl(MenuVisible(),0);assert(!active&&!auto_fault&&!reserved);
  utility_state=0;utility_kind=0;AutoControl(MenuVisible(),100000);assert(active);
+ // Custom autosaves using direct synchronous writes have no utility status.
+ Reset();AutoControl(0,0);current_k1=0x100000;save_worker_step=1;
+ write_fd=5;write_data=(const void *)0x12345678;write_size=4096;write_result=2048;
+ assert(FileWriteHook(5,write_data,4096)==2048&&write_calls==1&&current_k1==0x100000);
+ assert(save_gate&&!active&&utility_native_ready&&home_output_restored&&!FirmwareUtilityVisible());
+ UpdateSaveGate(clock_us+300000);AutoControl(MenuVisible(),clock_us+600000);assert(active);
+ // Failed writes retain the original error, pointer and count; no buffer read.
+ write_result=-9;assert(FileWriteHook(5,write_data,4096)==-9&&write_calls==2);
+ // Async submissions keep native output until observed completion, not a timer.
+ Reset();AutoControl(0,0);current_k1=0x100000;save_worker_step=1;write_result=0;
+ assert(FileWriteAsyncHook(5,write_data,4096)==0&&HasPendingWrites());
+ UpdateSaveGate(clock_us+2000000);assert(save_gate&&module_stop(0,NULL)<0);
+ write_result=-5;assert(FileWriteAsyncHook(5,write_data,4096)==-5&&HasPendingWrites());write_result=0;
+ int64_t io_result=12345;async_result_pointer=&io_result;async_result_code=1;
+ assert(FilePollHook(5,&io_result)==1&&HasPendingWrites()&&io_result==12345);
+ async_result_code=0;assert(FileWaitCBHook(5,&io_result)==0&&!HasPendingWrites()&&current_k1==0x100000);
+ UpdateSaveGate(clock_us+299999);assert(save_gate);UpdateSaveGate(clock_us+300000);assert(!save_gate);
+ AutoControl(MenuVisible(),clock_us+600000);assert(active);
+ // Async failure clears only its tracking; successful stat/wait/close also
+ // release tracking, without changing results or caller-owned output storage.
+ write_result=-7;assert(FileWriteAsyncHook(5,write_data,4096)==-7&&!HasPendingWrites());
+ write_result=0;assert(FileWriteAsyncHook(5,write_data,4096)==0);
+ assert(FileStatHook(5,1,&io_result)==0&&!HasPendingWrites()&&io_result==12345);
+ assert(FileWriteAsyncHook(5,write_data,4096)==0);assert(FileWaitHook(5,&io_result)==0&&!HasPendingWrites());
+ assert(FileWriteAsyncHook(5,write_data,4096)==0);close_result=-4;
+ assert(FileCloseHook(5)==-4&&HasPendingWrites());close_result=0;
+ assert(FileCloseHook(5)==0&&!HasPendingWrites());
+ // Standard output and zero-length writes bypass the save handoff.
+ Reset();AutoControl(0,0);current_k1=0x100000;write_fd=1;write_result=10;
+ assert(FileWriteHook(1,write_data,4096)==10&&!save_gate&&active);
+ write_fd=5;write_size=0;assert(FileWriteHook(5,write_data,0)==10&&!save_gate);write_size=4096;
  // Silent savedata entry: pause BEFORE the original API sets utility state.
  Reset();AutoControl(0,0);int save_jobs=enqueue_calls;save_parameter=(void *)0x12345678;
  current_k1=0x100000;save_worker_step=1;save_result=0;save_expected_gate=save_expected_ready=1;save_returns_status=1;
@@ -271,7 +317,7 @@ int main(void){
  filter_mode=FILTER_DITHER;pad_buttons=0;PollFilter(0,109);alloc_fail=1;
  pad_buttons=chord;PollFilter(0,110);assert(filter_mode==FILTER_SHARP&&dep_memory<0);alloc_fail=0;
  assert(FreeGeMemory()==0);
- puts("R11 savedata-entry/paused-GE/utility dialog/HOME and GE user-memory checks passed: immediate default-on, TV/source gating, busy retry, fault latch, NODS native status, NULL/kernel output restoration, native menu RGBA5551 GPU scaling, reboot quiesce/scanout cleanup, preserved HOME canvas/stride/format, no HOME resize, automatic resume and in-flight HOME suppression.");
+ puts("R12 direct-write/savedata-entry/paused-GE/utility dialog/HOME and GE user-memory checks passed: immediate default-on, TV/source gating, busy retry, fault latch, NODS native status, NULL/kernel output restoration, native menu RGBA5551 GPU scaling, reboot quiesce/scanout cleanup, preserved HOME canvas/stride/format, no HOME resize, automatic resume and in-flight HOME suppression.");
 }
 unsigned TestRead(unsigned off){return off==0?3:off==0x1c?2160:off==0x2c?480:0;}
 int sceKernelCpuSuspendIntr(void){return 0;}void sceKernelCpuResumeIntr(int n){(void)n;}

@@ -10,7 +10,7 @@ LDFLAGS = -nostartfiles
 LIBS = -lpspsystemctrl_kernel -lpspge_driver -lgcc
 PSPSDK = $(shell psp-config --pspsdk-path)
 include $(PSPSDK)/lib/build.mak
-main.o: render.h logger.inc effects.h
+main.o: render.h logger.inc effects.h write_guard.inc
 render.o: render.h
 
 effects.o: render.h effects.h

@@ -1,9 +1,9 @@
 {
   "name": "PSP Go TV Scale Auto + HOME",
-  "revision": 11,
-  "baseline": "R10 preserves R9 working visible save/load fix; six paused GPU lists completed correctly but silent-save crash persists",
+  "revision": 12,
+  "baseline": "R11 handoff works for early savedata call; same-place late freeze has no second savedata entry",
   "psp_build": "passed -Wall -Wextra -Werror",
-  "host_tests": "ASan/UBSan actual-source regressions pass: pre-init native handoff, untouched parameter identity, caller K1 preservation, original result propagation, 250ms handoff timeout, retained in-flight packet, 300ms gate expiry and utility-driven resume; prior paused-ID/HOME/input/memory regressions pass",
+  "host_tests": "ASan/UBSan actual-source tests pass for sync partial/error propagation, original fd/data/count/K1, async hold/completion and busy poll, failed duplicate write preserving prior tracking, status/wait/waitCB/close paths, error close retention, stdout/zero-length bypass, resume and prior save/GPU/HOME/input regressions",
   "hardware_tested": false,
   "default_filter": "Soft",
   "control": "Hold L+R, tap Triangle; NODS default L1+R1+Triangle",
@@ -21,12 +21,12 @@
     "Deposterise"
   ],
   "deposterise": "CPU separable edge-aware smoothing, 12-level RGB threshold, optional 544 KiB user-partition buffer",
-  "remaining": "Real PSP Go silent-save test, native_ready marker and save-entry/return evidence; crash resolution not yet established",
+  "remaining": "Real PSP Go same-level-end test; inspect direct-write markers and native_ready status; crash resolution not established",
   "unchanged": "R7 filters/controls and R6 reboot lifecycle; no game-specific or NODS changes",
-  "change": "Wrap savedata-init user syscall to request worker drain/native output before original API starts; bounded handoff and post-call quiet period; preserve parameters, caller K1 and result",
+  "change": "Guard direct synchronous/asynchronous user file writes before original operation; track async writes until completion APIs/close, then quiet-window fullscreen resume; new write-path diagnostics",
   "evidence": {
-    "r10_log": "Six list_paused/list_pause_finished pairs, no later utility entry, last record263036ms timeouts0 invalid_frames0 pending-1. Crash cause remains unknown.",
-    "user_feedback": "Disabling plugin gets past failure; saving without visible system dialog.",
-    "limitation": "Does not intercept games writing save files directly; new markers establish whether failing operation uses PSP savedata API."
+    "r11_log": "savedata_init_handoff native_ready1 in20218us around30s, returns0 and resumes. Later log ends273159ms without save entry, timeout, invalid frame or unresolved paused list.",
+    "scope": "Writes on fd>=3 only; no reads, standard streams, zero-length calls or firmware-internal direct kernel I/O. Game log/config writes also trigger native output.",
+    "remaining": "Determine whether end-of-level failure reaches direct-write hooks and whether native handoff prevents it."
   }
 }

@@ -1,10 +1,48 @@
-# PSP Go Fullscreen Plugin — revision 11
+# PSP Go Fullscreen Plugin — revision 12
 
-[Download R11 build and source](pspgo-tv-scale-v1-auto-home-r11.zip) · [Plugin PRX](PSPGoTVScale.prx)
+[Download R12 build and source](pspgo-tv-scale-v1-auto-home-r12.zip) · [Plugin PRX](PSPGoTVScale.prx)
 
 Immediate fullscreen scaling with ten live filters. Retains revision 6's
 user-confirmed HOME rendering and return-to-VSH handling, and the user-memory
 GPU fix that removes the opicker dependency.
+
+## Direct file-write guard (R12 test build)
+
+The R11 log shows a savedata-init handoff succeeded in about 20 ms near the start
+of the run and the system save screen returned to fullscreen. The later same-place
+freeze has no further savedata entry, so that guard did not identify the failing
+operation. R12 adds direct-write handoff and markers to test this other path;
+the crash cause remains unconfirmed.
+
+User sceIoWrite/sceIoWriteAsync calls on fd >= 3 with nonzero length request the
+existing worker's native-output handoff before calling the original operation.
+Buffers, descriptors, counts, K1, result pointers and return values are preserved;
+no save data is inspected, altered or independently written. Reads, zero-length
+writes and standard input/output/error bypass this guard. Plugin kernel logging
+bypasses the user syscall wrappers, avoiding recursive logging. Game log/config
+writes also trigger this handoff; it is not limited to save files.
+
+Synchronous writes use the existing 300 ms quiet window after return. Async
+writes additionally hold native output until successful PollAsync, WaitAsync,
+WaitAsyncCB, GetAsyncStat or synchronous Close confirms completion. Busy/error
+polls and failed closes retain tracking; a second failed async submission does
+not discard a prior tracked write. Callback/result pointers go to the original
+function unchanged. There are 128 tracking slots; overflow conservatively holds
+native output for the session. The user write operation is still allowed after
+the bounded 250 ms handoff deadline, even if native output is not acknowledged.
+
+All seven exports must resolve before any direct-write wrappers are installed.
+Diagnostics: file_write_guard, file_write_enter (fd/byte count/async),
+file_write_handoff,native_ready, file_write_return and file_write_async_complete.
+These establish whether the failing save uses direct file writes. Explicit
+unload is blocked while a tracked write is pending. Firmware-internal direct
+kernel I/O calls are outside these user syscall wrappers.
+
+Checks cover synchronous partial/error results, no-utility-status handoff,
+async hold beyond timer expiry, busy/completed polling, all completion wrappers,
+failed submission/close, retained GPU storage, quiet-window resume and stdout/
+zero-length bypass. Hardware confirmation is still required. R9 visible-dialog,
+R10 paused-list and R11 savedata-entry handling remain.
 
 ## Savedata-entry guard (R11 test build)
 
@@ -88,7 +126,7 @@ Other errors retain the existing fault handling.
 Utility detection still uses export-resolved private type/status getters with
 validated read-only leaf bodies, without application callback APIs or guessed
 data addresses. If these getters are unavailable or unrecognized, detection is
-unavailable. Log banner: auto_home_r11. Look for utility_native_output,
+unavailable. Log banner: auto_home_r12. Look for utility_native_output,
 list_id_retired,idle_fence_passed and system_dialog_closed,scaling_resumed.
 
 Host regressions reproduce the reported invalid-ID failure with both busy and
@@ -185,4 +223,4 @@ reference for all four formats, edge rows/alpha/padding, notice bounds, merged
 input validation, one change per press, HOME suppression, optional allocation
 failure, processed user-RAM texture submission, and the existing HOME/reboot
 regressions. Host tests use fake PSP APIs and do not execute actual GE drawing
-or firmware scheduling. Revision 11 has not been tested on real hardware here.
+or firmware scheduling. Revision 12 has not been tested on real hardware here.

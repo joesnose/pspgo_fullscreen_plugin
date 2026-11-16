@@ -18,7 +18,7 @@
 #include <stddef.h>
 #include "render.h"
 #include "effects.h"
-PSP_MODULE_INFO("PSPGoTVScaleV1Auto",0x1000,1,11);
+PSP_MODULE_INFO("PSPGoTVScaleV1Auto",0x1000,1,12);
 extern void sctrlHENPatchSyscall(void *,void *);
 static const char *logpath;
 #include "logger.inc"
@@ -83,9 +83,10 @@ static int FirmwareUtilityVisible(void){
   return status==1||status==2||status==3||status==5;
 }
 static int UtilityVisible(void){return save_gate||FirmwareUtilityVisible();}
+static int HasPendingWrites(void);
 static void UpdateSaveGate(unsigned now){
   int intr=sceKernelCpuSuspendIntr();
-  if(save_gate&&!save_entries&&(int)(now-save_quiet_until)>=0)save_gate=0;
+  if(save_gate&&!save_entries&&!HasPendingWrites()&&(int)(now-save_quiet_until)>=0)save_gate=0;
   sceKernelCpuResumeIntr(intr);
 }
 static int MenuVisible(void){return HomeVisible()||UtilityVisible();}
@@ -318,6 +319,7 @@ static int SavedataInitHook(void *params) {
   if(!reboot_late)logline("savedata_init_return,result,0x%08X\n",(unsigned)result);
   pspSdkSetK1(caller_k1);return result;
 }
+#include "write_guard.inc"
 static int InstallHooks(void) {
   unsigned f=Find("sceDisplay_Service","sceDisplay_driver",0x3e17fe8d);
   unsigned m=Find("sceDisplay_Service","sceDisplay_driver",0x0e20f177);
@@ -344,10 +346,12 @@ static int InstallHooks(void) {
   real_savedata_init=(SavedataInitFn)(uintptr_t)Find("sceUtility_Driver","sceUtility",0x50c4cd57);
   if(real_savedata_init){sctrlHENPatchSyscall((void *)real_savedata_init,SavedataInitHook);savedata_hooked=1;}
   logline("savedata_entry_guard,%u\n",savedata_hooked);
+  InstallFileHooks();
   hooks_installed=1;return 0;
 }
 static void RemoveHooks(void) {
   if(!hooks_installed)return;
+  RemoveFileHooks();
   if(savedata_hooked){sctrlHENPatchSyscall(SavedataInitHook,(void *)real_savedata_init);savedata_hooked=0;}
   sctrlHENPatchSyscall(GetModeHook,(void *)get_mode);
   sctrlHENPatchSyscall(GetSizeHook,(void *)get_size);
@@ -646,7 +650,7 @@ static int MainThread(SceSize argc,void *argv) {
   for(unsigned i=0;i<2;++i){SceUID fd=sceIoOpen(paths[i],PSP_O_WRONLY|PSP_O_CREAT|PSP_O_TRUNC,0666);if(fd>=0){logpath=paths[i];sceIoClose(fd);break;}}
   if(!logpath)return 0;
   unsigned fw=sceKernelDevkitVersion();
-  logline("PSPGoTVScale,base,alpha1,variant,auto_home_r11,model,%d,devkit,0x%08X\n",sceKernelGetModel(),fw);
+  logline("PSPGoTVScale,base,alpha1,variant,auto_home_r12,model,%d,devkit,0x%08X\n",sceKernelGetModel(),fw);
   if(sceKernelGetModel()!=4||(fw!=0x06060010&&fw!=0x06060110)){logline("unsupported_model_or_firmware\n");return 0;}
   filter_mode=FILTER_SOFT;logline("filter,%s\n",FilterName(filter_mode));
   if(InitGeMemory()<0)return 0;
@@ -704,7 +708,7 @@ int module_start(SceSize args,void *argp) {
 }
 int module_stop(SceSize args,void *argp) {
   (void)args;(void)argp;
-  if(pending_list>=0||save_entries)return -1; // Do not free a context/list still used by GE.
+  if(pending_list>=0||save_entries||HasPendingWrites())return -1; // Do not free a context/list still used by GE.
   running=0;
   if(worker>=0){sceKernelWaitThreadEnd(worker,NULL);sceKernelDeleteThread(worker);worker=-1;}
   if(reserved&&Deactivate()<0)return -1;
