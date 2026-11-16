@@ -1,33 +1,16 @@
 {
-  "name": "PSP Go TV Scale Auto + HOME",
-  "revision": 14,
-  "baseline": "R13 native diagnostic mode allows Burnout Legends save with plugin/4MiB reservation retained; resumed scaled image duplicates and later toggle crashes",
+  "name": "PSP Go Fullscreen Plugin",
+  "revision": 15,
+  "baseline": "R13; R14 bypassed at user request",
+  "change": "Fenced current+queued native handoff; rebind native tuples after mode change, detach all upper-VRAM references, global-idle restoration to2MiB, free GPU/deposterise user RAM, fresh allocation on fullscreen return",
   "psp_build": "passed -Wall -Wextra -Werror",
-  "host_tests": "ASan/UBSan actual-source regressions pass: stale hardware-only size repaired, busy/failure native fallback without unsafe submission, mid-draw invalidation not published, mode reset repaired before resume with TV stride/format, plus prior diagnostic/save/write/GPU/input/HOME tests",
   "hardware_tested": false,
-  "default_filter": "Soft",
-  "control": "Hold L+R, tap Triangle; NODS default L1+R1+Triangle",
-  "config": "No INI access or persistence",
-  "filters": [
-    "Sharp",
-    "Soft",
-    "Blur",
-    "CRT",
-    "Soft CRT",
-    "RGB Mask",
-    "Sharpen",
-    "Posterise",
-    "Dither",
-    "Deposterise"
-  ],
-  "deposterise": "CPU separable edge-aware smoothing, 12-level RGB threshold, optional 544 KiB user-partition buffer",
-  "remaining": "Real PSP Go resume test and new storage/output diagnostics; original automatic save-time failure not yet confirmed fixed",
-  "unchanged": "R7 filters/controls and R6 reboot lifecycle; no game-specific or NODS changes",
-  "change": "Check actual GE enabled-size register as well as software reservation; idle-only driver repair, atomic check/enqueue, post-draw validation and native fallback; set/verify TV mode before first resumed frame",
-  "evidence": {
-    "r13_log": "Native mode retains4MiB and workspaceUID86651715; draws fixed32280 through native interval. Savedata and 10240/16/63200/4912-byte writes complete. Log ends at native-request0.",
-    "user_feedback": "After re-enabling, parts of scaled image duplicated with garbling underneath; next toggle crashed.",
-    "hypothesis": "Software reservation may not guarantee current upper-VRAM hardware mapping; not proven on hardware.",
-    "firmware_source": "uofw GE register19 selects enabled size, set_size4MiB writes2 and matching sysreg; export1FDB4C62 verified in local Go firmware."
-  }
+  "evidence": "User clarified duplication occurs when scaling is turned OFF. Old R13 cleared only the next-frame scaled layer before mode change. Native-mode log previously confirmed saving can complete with scaler jobs stopped.",
+  "host_tests": "ASan/UBSan actual-source tests pass: faithful current/pending display model, separate native formats/strides, old-layer detach before mode set, no IRQ-disabled waits, scanout timeout, other upper-VRAM reference and busy-GE deferrals, fenced release to2MiB and freed user workspace, fresh activation, optional-filter fallback, plus prior savedata/write/HOME/reboot/input regressions",
+  "retained": "Immediate Soft fullscreen default; all10 filters; NODS input; existing ordinary HOME/reboot path; original save/write arguments/K1/results",
+  "controls": {
+    "filter": "L+R+Triangle",
+    "fullscreen_native": "L+R+Square"
+  },
+  "remaining": "Real PSP Go native image and save/return test. Original automatic save-time crash cause remains unconfirmed."
 }

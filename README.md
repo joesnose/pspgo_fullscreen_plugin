@@ -1,303 +1,130 @@
-# PSP Go Fullscreen Plugin — revision 14
+# PSP Go Fullscreen Plugin — revision 15
 
-[Download R14 test build and source](pspgo-tv-scale-v1-auto-home-r14.zip) · [Plugin PRX](PSPGoTVScale.prx)
+[Download R15 build and source](pspgo-tv-scale-v1-auto-home-r15.zip) · [Plugin PRX](PSPGoTVScale.prx)
 
-Immediate fullscreen scaling with ten live filters. Retains revision 6's
-user-confirmed HOME rendering and return-to-VSH handling, and the user-memory
-GPU fix that removes the opicker dependency.
+Immediate fullscreen TV scaling for PSP Go, with live filters and NODS support.
+R15 is based on R13. It replaces the native-output handoff; R14's hardware-register
+repair changes are not included.
 
-## Fullscreen resume validation (R14 test build)
+## Native-output and save handoff
 
-The R13 log confirms native diagnostic mode stopped scaler draws at 32280,
-retained the workspace and 4 MiB reservation, and allowed Burnout Legends' save
-writes to complete. User feedback: turning scaling back on then showed parts
-of the image duplicated with garbling underneath; another toggle crashed.
-The log ends at the request to resume. This identifies an active scaling/output
-interaction, but does not establish the underlying crash mechanism.
+The reported duplication happens when turning scaling OFF. R13 cleared only the
+next-vblank priority-0 layer before changing mode, allowing the current scaled
+RGB565/stride768 layer to remain active during the native transition.
 
-R14 checks both software EDRAM size and the GE enabled-size register before
-submitting each scaler job. The upper output buffers require software 4 MiB
-and enabled-size register 19 value 2. A stale reservation is repaired through
-the normal sceGeEdramSetSize driver API only while the whole GE is idle, then
-verified. No arbitrary register values are written. A busy/failed repair, state
-change before submission or state change during drawing selects native fallback
-and prevents publication of that image. The final pre-submit check and enqueue
-run under the same interrupt guard. Address-translation registers are logged
-read-only and are not changed.
+R15's worker performs this sequence:
 
-Fullscreen resume now waits for GE idle, restores D2 720x480 mode first, verifies
-the actual returned mode, then draws a fresh output frame and publishes it with
-stride768/RGB565. It no longer draws the resumed image before configuring TV mode.
-A failed/deferred resume selects native fallback. Ordinary save/write detection,
-filters and the R13 diagnostic toggle remain.
+1. Stop scaler submissions and wait for its owned list to finish or be safely
+   retired. Paused lists retain their storage.
+2. Detach both current and queued scaled layers. Wait for scanout to latch.
+3. Set the original native TV mode, then re-read and rebind the game's current
+   and queued framebuffer tuples separately, preserving native stride/format.
+   Restore the latest native priority-0 layer, including NULL for no overlay.
+4. Wait two native scanouts. Verify the native mode, inspect all current/queued
+   display layers for upper-VRAM references and check global GE idle.
+5. Restore the normal 2 MiB EDRAM configuration and free the dynamic user-RAM GPU
+   workspace and optional deposterise buffer after cleaning their cache ranges.
+   Module code/hooks remain resident.
 
-New records: scaler_storage (software size, enabled register, translation),
-scaler_storage_repair, scaler_native_fallback with reason, and
-scaler_resume_output (address, stride, format, physical mode/geometry and LCDC).
-These will establish whether the hardware size or output state changes on this
-PSP Go. Such a change is a hypothesis, not yet demonstrated by device logs.
+A missing fence, busy GE or other live upper-VRAM layer postpones release. No
+in-flight memory is forcibly freed, and no global queue reset is performed.
+The same helper is used for manual native mode and detected save/write handoffs.
+The save API's handoff wait is bounded at 250 ms; the original operation still
+runs after that deadline, with unresolved resources retained until safe.
 
-Test: replace the PRX and fully restart, use L+R+Square before finishing the same
-event, let the save complete in native mode, then use the chord once to resume.
-Send the log and describe whether duplication returns. This build targets safe
-fullscreen resumption; automatic passage through the original save-time freeze
-remains unconfirmed.
+Fullscreen return allocates a fresh aligned user-partition GPU workspace and
+reacquires the upper TV buffer bank using the original activation path. The
+selected filter is retained; an unavailable optional deposterise allocation
+falls back to Sharp. No old command/context allocation is reused after release.
 
-Strict PSP compilation and host tests cover stale hardware size with unchanged
-software reservation, idle-only repair, failed/busy repair without submission,
-mid-draw invalidation, mode setup invalidating the hardware register and correct
-resume mode/stride/format, plus existing lifecycle regressions.
+This addresses a concrete handoff ordering gap and removes scaler buffer
+ownership during completed native handoffs. The exact cause of the original
+Burnout Legends save-time crash is still unconfirmed. Real PSP Go verification
+is required for the native image, return to fullscreen and the save transition.
 
-## Burnout Legends isolation test (R13 diagnostic build)
+## Install and controls
 
-The R12 log confirms both its early savedata handoff and a direct 51-byte write
-completed successfully. At the later same-place freeze there is no new guarded
-save/write entry, invalid source or timeout. Eight paused GPU jobs completed.
-The user identified Burnout Legends; the crash cause remains unconfirmed.
+Fully power off the Go, replace ef0:/SEPLUGINS/PSPGoTVScale.prx, then restart.
+Keep the existing GAME entry and NODS configuration:
 
-This build adds a controlled native-output switch. Hold L+R and tap Square
-(default NODS: L1+R1+Square) shortly before finishing the event. The image should
-shrink to ordinary native TV output. Finish the same event and observe whether
-the results/save transition works. Repeat the chord to restore fullscreen after
-the transition. L+R+Triangle still cycles filters; startup still defaults to Soft
-fullscreen. The Square chord is also visible to the game.
+    game, ef0:/SEPLUGINS/PSPGoTVScale.prx, on
 
-Native diagnostic mode drains the owned list, releases the scaled layer and
-restores the native TV geometry. It submits no scaler jobs, including HOME jobs,
-while selected. It retains the exact plugin GPU workspace allocation and 4 MiB
-EDRAM reservation, and leaves existing hooks and save/write guards installed.
-This isolates active scaling/TV output from the resident plugin; it does not
-remove every possible source of plugin interference. Save guards acknowledge
-an already-native layout normally. Returning to fullscreen uses the existing
-resume path with the current native game framebuffer and selected preset.
+Fullscreen starts automatically with Soft filtering. No startup delay or INI.
+Old INI files are ignored. opicker is not required.
 
-The log records diagnostic_native_requested, diagnostic_native_ready (including
-actual EDRAM size and workspace ID), and diagnostic_native in stats. During the
-test active should be 0 and draws should stop increasing. Retrieve the log before
-starting another game. A transition that works only in this native mode points
-to active scaling/output; a continued crash requires investigating resident
-hooks/memory and other interactions. This is a diagnostic build, not a claimed
-fix for the crash.
+- Hold L+R and tap Triangle: next filter; brief filter-name label.
+- Hold L+R and tap Square: switch fullscreen/native output. Release Square
+  between toggles. Default NODS mappings: L1+R1+Triangle/Square.
 
-Host checks cover one action per Square press, no GE submissions in native mode,
-HOME suppression, retained workspace/EDRAM, unchanged filter, current-frame resume
-and native selection before startup. Existing save/write/paused-GE tests pass.
+The chords remain visible to the game. Changes are suppressed while system
+menus are active. Native mode uses no scaler GPU jobs and releases its dynamic
+RAM/VRAM buffers after the fences above. Returning allocates fresh buffers.
+Ordinary HOME outside a save/native handoff retains the working bilinear menu
+renderer and existing early reboot cleanup. No NODS or volume code is modified.
 
-## Direct file-write guard (R12 test build)
+First check an off/on toggle during ordinary gameplay for the duplicated native
+image. Then repeat the same event/save transition and report both the outcome
+and log. The old manual-native-before-finish workaround remains available.
 
-The R11 log shows a savedata-init handoff succeeded in about 20 ms near the start
-of the run and the system save screen returned to fullscreen. The later same-place
-freeze has no further savedata entry, so that guard did not identify the failing
-operation. R12 adds direct-write handoff and markers to test this other path;
-the crash cause remains unconfirmed.
+## Filters
 
-User sceIoWrite/sceIoWriteAsync calls on fd >= 3 with nonzero length request the
-existing worker's native-output handoff before calling the original operation.
-Buffers, descriptors, counts, K1, result pointers and return values are preserved;
-no save data is inspected, altered or independently written. Reads, zero-length
-writes and standard input/output/error bypass this guard. Plugin kernel logging
-bypasses the user syscall wrappers, avoiding recursive logging. Game log/config
-writes also trigger this handoff; it is not limited to save files.
+Cycle: Sharp -> Soft -> Blur -> CRT -> Soft CRT -> RGB Mask -> Sharpen ->
+Posterise -> Dither -> Deposterise -> Sharp. Default Soft; session-only selection.
 
-Synchronous writes use the existing 300 ms quiet window after return. Async
-writes additionally hold native output until successful PollAsync, WaitAsync,
-WaitAsyncCB, GetAsyncStat or synchronous Close confirms completion. Busy/error
-polls and failed closes retain tracking; a second failed async submission does
-not discard a prior tracked write. Callback/result pointers go to the original
-function unchanged. There are 128 tracking slots; overflow conservatively holds
-native output for the session. The user write operation is still allowed after
-the bounded 250 ms handoff deadline, even if native output is not acknowledged.
+| Filter | Appearance / cost |
+| --- | --- |
+| Sharp | Nearest-neighbour; one image pass |
+| Soft | Bilinear; one image pass |
+| Blur | Five same-frame averaged samples |
+| CRT | Bilinear plus scanline overlay |
+| Soft CRT | Lighter scanlines and ordered dithering |
+| RGB Mask | Subtle vertical RGB stripes |
+| Sharpen | Six-pass fixed-function unsharp approximation |
+| Posterise | Roughly eight colour levels per channel |
+| Dither | Bilinear with ordered RGB565 dithering |
+| Deposterise | CPU edge-aware smoothing, then bilinear; optional 544 KiB buffer |
 
-All seven exports must resolve before any direct-write wrappers are installed.
-Diagnostics: file_write_guard, file_write_enter (fd/byte count/async),
-file_write_handoff,native_ready, file_write_return and file_write_async_complete.
-These establish whether the failing save uses direct file writes. Explicit
-unload is blocked while a tracked write is pending. Firmware-internal direct
-kernel I/O calls are outside these user syscall wrappers.
+Effects are native PSP approximations, not identical PPSSPP shaders. They use
+only the current image, not previous-frame feedback. Deposterise and multi-pass
+filters can reduce performance. HOME filtering is independent of game filtering.
 
-Checks cover synchronous partial/error results, no-utility-status handoff,
-async hold beyond timer expiry, busy/completed polling, all completion wrappers,
-failed submission/close, retained GPU storage, quiet-window resume and stdout/
-zero-length bypass. Hardware confirmation is still required. R9 visible-dialog,
-R10 paused-list and R11 savedata-entry handling remain.
+## Save guards and diagnostics
 
-## Savedata-entry guard (R11 test build)
+The savedata-init wrapper also covers silent/AUTO operations using that API.
+Direct nonzero user file writes on fd>=3 request the same native handoff. Async
+writes stay gated until completion is observed through poll/wait/status or close.
+Original arguments, caller K1, pointers and results are preserved; no save data
+is inspected or independently modified. Reads, standard streams and zero-length
+writes bypass the direct-write guard. Firmware-internal direct kernel calls
+remain outside the user wrappers. Game log/config writes also use the guard.
 
-R10's device log shows six paused lists completing correctly, followed by another
-abrupt freeze before a results screen, with no new utility event or GPU timeout.
-User testing confirms the plugin is involved and the game saves without opening
-the system save screen. The exact failing operation is still unconfirmed.
+Log: ef0:/PSPGoTVScale.txt (ms0:/ fallback), banner auto_home_r15. Copy it before
+starting another game. Useful records:
 
-R11 wraps the game's sceUtilitySavedataInitStart syscall, covering AUTO/silent
-operations using that API. Before the original function starts, it suppresses
-new scaler submissions and requests native output from the existing worker.
-The calling thread yields for at most 250 ms for the worker to drain the owned
-list and acknowledge the handoff. It then calls the original function exactly
-once, passing the untouched parameter pointer, with the original caller K1 and
-return value. Even if the handoff times out, the normal save API is allowed to
-run and new scaler jobs remain suppressed. No save files are opened or modified
-by the guard. Display callbacks still perform no waits, GPU work or file I/O.
+- native_output_bound: current/queued native addresses, strides and pixel formats.
+- native_handoff_complete: expected edram2097152, reserved0, gpu_memory-1,
+  dep_memory-1 after successful release.
+- native_handoff_wait: why a fence/release is deferred.
+- native_closed,fresh_scaler_resources,1: fullscreen reactivated with fresh buffers.
+- savedata_init/file_write markers: handoff timing and original results.
 
-A 300 ms quiet period after the original call returns covers short operations;
-normal utility status continues to suppress scaling for longer operations. The
-worker resumes the selected filter using the existing native-dialog recovery.
-An outstanding entry blocks explicit plugin unload. Reboot keeps hooks/storage
-resident as before. The existing visible-save-screen fix remains in place.
+The supported target remains PSP Go, ARK, 6.60/6.61, progressive component 480p,
+with supported native 480x272 game framebuffers. It stretches the existing image;
+it does not extend game geometry. Universal game compatibility is not established.
 
-Logs identify savedata_entry_guard support, savedata_init_enter,
-savedata_init_handoff,native_ready (1 confirms the handoff), and
-savedata_init_return. These markers distinguish an entry race from a game that
-bypasses this API and writes its files directly. No direct file-I/O hooks were
-added. This is a targeted test build, not a confirmed crash diagnosis.
-
-Host checks cover the handoff before any utility status is visible, caller K1,
-parameter identity, original success/failure results, bounded timeout with
-in-flight storage retained, quiet-period expiry, and normal fullscreen resume.
-
-## Paused GPU list handling (R10 test build)
-
-The R9 device log confirms the save/load screen fix worked and fullscreen resumed.
-The later freeze occurred before the level-results screen. Its last gameplay
-record has no timeout, invalid source or utility-entry event, so the log does not
-identify the crash cause. R10 preserves R9's working native save/load path.
-
-Code review found an unsafe completion assumption: PSPSDK names list-sync value
-4 CANCEL_DONE, while firmware sceGeListSync also returns 4 for a resumable PAUSED
-list after sceGeBreak(0), or a previously running list queued again. R9 treated
-that as finished and could overwrite its still-owned command packet/context.
-
-R10 accepts only status 0 as completed. Paused lists retain their ID and all
-GPU-read storage without publishing their image, dequeueing them or latching a
-timeout fault. The worker waits for the game to resume the list; an actual queue
-reset instead uses R9's invalid-ID/global-idle retirement fence. The plugin does
-not force a global GPU continuation or reset.
-
-New logs: list_paused, list_pause_finished and per-second paused_lists/pending.
-Host regressions verify paused packets and contexts remain byte-for-byte intact,
-unload/filter memory cannot be freed while paused, repeated polls do not submit,
-normal completion resumes fullscreen, and pause-to-reset uses the idle fence.
-This is a targeted correctness fix, not a confirmed diagnosis of the reported
-freeze. Please repeat the same level-end transition and retain the log.
-
-## Save/load dialog recovery (R9)
-
-The uploaded R8 Burnout log confirms utility detection works, followed by
-list_sync_error 0x80000100 (invalid GE display-list ID) during utility startup.
-R8 kept that ID pending, repeatedly polled it, and latched a scaling fault.
-
-R9 leaves save/load and other standard utility screens at their native game-sized
-TV layout while they own the shared GPU queue. It submits no scaler jobs during
-utility init, visible, finished or shutdown phases. Fullscreen resumes with the
-selected game filter after the utility closes or is cancelled. HOME opened while
-a utility is running also uses native output until the utility closes; ordinary
-HOME rendering outside utilities retains the previously working scaler path.
-
-An invalid owned list ID is treated as a retired queue entry only after a
-nonblocking global GPU-idle poll succeeds. Until then the packet, processed
-pixels and context remain reserved. The retired image is discarded, not
-published as complete; the paused restore path retries without a permanent
-fault. There are no global queue resets or cancellations of the game's work.
-Repeated invalid-ID errors are logged once per submission rather than every loop.
-Other errors retain the existing fault handling.
-
-Utility detection still uses export-resolved private type/status getters with
-validated read-only leaf bodies, without application callback APIs or guessed
-data addresses. If these getters are unavailable or unrecognized, detection is
-unavailable. Log banner: auto_home_r14. Look for utility_native_output,
-list_id_retired,idle_fence_passed and system_dialog_closed,scaling_resumed.
-
-Host regressions reproduce the reported invalid-ID failure with both busy and
-idle GPU states and verify native dialog handling, no dialog submissions,
-repeated/cancelled dialogs, startup during a dialog, nested HOME and resumed
-fullscreen. Real Burnout save/load behavior still needs a PSP Go test.
-
-## Install and control
-
-1. Fully power off the PSP Go and replace ef0:/SEPLUGINS/PSPGoTVScale.prx.
-2. Keep the existing GAME entry and NODS configuration:
-
-       game, ef0:/SEPLUGINS/PSPGoTVScale.prx, on
-
-3. Restart. Fullscreen starts automatically with Soft filtering and no delay.
-4. Hold L + R and tap Triangle to advance one filter. Release Triangle before
-   advancing again. Default NODS controller mapping is L1 + R1 + Triangle.
-   A label shows the selected filter for 1.5 seconds. Changes are suppressed
-   while native HOME is open. The chord is still visible to the game.
-
-The INI is no longer used or included. An old INI can be deleted or left in place;
-it is ignored. Selection lasts for this game session and resets to Soft on the
-next launch. NODS positive-peek input follows Impose's validated merged import;
-local PSP input is the fallback. No NODS changes are required.
-
-## Filter cycle
-
-Sharp -> Soft -> Blur -> CRT -> Soft CRT -> RGB Mask -> Sharpen -> Posterise ->
-Dither -> Deposterise -> Sharp. Initial selection is Soft.
-
-| Filter | Effect | Work |
-| --- | --- | --- |
-| Sharp | Nearest-neighbour scaling | One image pass |
-| Soft | Bilinear scaling; default | One image pass |
-| Blur | Stronger spatial smoothing | Five averaged image passes |
-| CRT | Bilinear image and alternating scanlines | Image plus overlay |
-| Soft CRT | Lighter scanlines with ordered dithering | Image plus overlay |
-| RGB Mask | Subtle repeating red/green/blue stripes | Image plus overlay |
-| Sharpen | Mild fixed-function unsharp approximation | Six image passes |
-| Posterise | Fewer colour levels, roughly eight per channel | Image plus two colour operations |
-| Dither | Bilinear scaling with ordered RGB565 dithering | One image pass |
-| Deposterise | Colour-aware smoothing of small colour steps | CPU prepass plus bilinear scaling |
-
-Posterise reduces colour levels. Deposterise instead smooths small colour
-changes: horizontal and vertical 1:2:1 samples are averaged only when neighbours
-are within 12 levels in every RGB channel; stronger edges and centre alpha are
-preserved. It handles all four supported source formats and uses an extra
-544 KiB user-RAM buffer, allocated only when selected and freed when leaving
-that mode after the owned GPU list finishes. If allocation fails, cycling skips
-Deposterise and logs the reason. This optional CPU effect may reduce frame rate.
-
-These are PSP implementations, not identical PPSSPP shaders. Sharpening is an
-approximation with intermediate clamping; CRT does not simulate curvature.
-Filtering uses only the current image, never previous frames. Soft and Sharp
-have the least processing work. Actual quality and cost require PSP Go testing.
-
-## HOME, exit and memory
-
-Native HOME always uses bilinear filtering independently of the game preset.
-Revision 6's live menu-source capture, full-TV menu rendering, cancel/resume,
-early reboot worker quiesce, owned-list drain, priority-0 clear, native TV-mode
-restore and scanout/idle-gated EDRAM release remain in place. Reboot does not
-free GPU storage or rewrite entry trampolines; late callbacks only set flags.
-
-All GPU-read commands, vertices, saved GE context and optional processed pixels
-live in aligned user partition 2. No clocks or DDR protection registers are
-changed. opicker is unnecessary. Supported target: PSP Go, ARK, 6.60/6.61,
-progressive component 480p, games with supported lower-2-MiB framebuffer layouts.
-The existing game image is stretched; game world geometry is not extended.
-
-Log: ef0:/PSPGoTVScale.txt (ms0:/ fallback). Copy it before opening another game.
-Filter changes appear as filter records; banner identifies auto_home_r9.
-
-## Build and verification
-
-PSP build uses -Wall -Wextra -Werror:
+## Build and checks
 
     docker run --rm -v "$PWD":/src -w /src pspdev/pspdev:latest make -j4
 
-Host checks:
+Host regressions use actual plugin source and fake PSP APIs, with ASan/UBSan:
 
-    cc -O2 -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined render_test.c render.c -o /tmp/go-tv-packet-test
-    /tmp/go-tv-packet-test
-    cc -O1 -g -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined filter_test.c render.c effects.c -lm -o /tmp/go-tv-filter-test
-    /tmp/go-tv-filter-test
-    cc -DHOST_TEST -D_GNU_SOURCE -O1 -g -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined effects_test.c render.c effects.c -o /tmp/go-tv-effects-test
-    /tmp/go-tv-effects-test
     cc -DHOST_TEST -D_GNU_SOURCE -O1 -g -std=c11 -Wall -Wextra -Werror -Wno-pointer-to-int-cast -Wno-int-to-pointer-cast -fsanitize=address,undefined auto_home_test.c render.c effects.c -o /tmp/go-tv-auto-test
     /tmp/go-tv-auto-test
 
-Checks cover all ten packet modes, format/aspect/buffer combinations, UV bounds,
-blur weights, CRT geometry, CPU deposterising against an independent full-frame
-reference for all four formats, edge rows/alpha/padding, notice bounds, merged
-input validation, one change per press, HOME suppression, optional allocation
-failure, processed user-RAM texture submission, and the existing HOME/reboot
-regressions. Host tests use fake PSP APIs and do not execute actual GE drawing
-or firmware scheduling. Revision 14 has not been tested on real hardware here.
+The current/queued display model detects mode changes made while an old scaled
+layer is live. Checks cover separate native tuples, scanout timeout, another
+upper-VRAM layer, busy GPU, no wait with interrupts disabled, fenced RAM/VRAM
+release, fresh reallocation, filter retention/fallback, original savedata/write
+semantics and the existing HOME/reboot/input regressions. Additional renderer
+and CPU-effect checks are in render_test.c, filter_test.c and effects_test.c.
+Host tests do not execute physical GE drawing or firmware scheduling.

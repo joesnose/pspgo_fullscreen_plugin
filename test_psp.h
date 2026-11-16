@@ -37,6 +37,7 @@ SceModule *sceKernelFindModuleByAddress(unsigned);
 void sceKernelDcacheWritebackInvalidateAll(void);
 void sceKernelIcacheInvalidateAll(void);
 void sceKernelDcacheWritebackRange(const void *,unsigned);
+void sceKernelDcacheWritebackInvalidateRange(const void *,unsigned);
 unsigned pspSdkSetK1(unsigned);
 unsigned sceKernelGetSystemTimeLow(void);
 int sceKernelDelayThread(unsigned);

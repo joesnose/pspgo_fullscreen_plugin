@@ -21,20 +21,31 @@ static SceModule utility_module={.ent_top=&utility_entry,.ent_size=sizeof(utilit
 static int MergedPad(SceCtrlData *pad,int n){(void)n;pad->Buttons=PSP_CTRL_LTRIGGER|PSP_CTRL_RTRIGGER|PSP_CTRL_TRIANGLE;return 1;}
 static void *dep_block;static unsigned dep_block_bytes;
 static int mode_v,w_v,h_v,edram,ge_busy,resize_calls,enqueue_calls,fail_enqueue,open_during_render;
-static int ge_enabled,fail_size,mode_resets_storage,storage_during_sync;
 static int frame_calls,mode_calls,sync_invalid,utility_during_render,sync_paused;
 static Frame game_frame,layer_frame,display_frame;
+static int slot_driver,hold_vblank,native_mode_with_old_layer,inject_native_frames,intr_depth;
+static Frame slots[4][2],native_rebound[2];
+static unsigned ge_allocations,ge_releases;
 static unsigned user_block_bytes;
-static void *user_block;static int alloc_fail,bad_head;
+static void *user_block;static int alloc_fail,bad_head,dep_only_fail;
 static int FakeStatus(void){return menu_bits;}
-static int FakeMode(int m,int w,int h){mode_calls++;mode_v=m;w_v=w;h_v=h;if(mode_resets_storage)ge_enabled=4;return 0;}
+static int FakeMode(int m,int w,int h){
+ mode_calls++;
+ if(slot_driver&&m==restore_mode){
+  uintptr_t a=slots[0][0].address&0x1fffffffu;
+  if(a>=0x04200000u&&a<0x04400000u)native_mode_with_old_layer++;
+  if(inject_native_frames){slots[2][0]=(Frame){0x04000000,512,1,0};slots[2][1]=(Frame){0x04088000,640,3,0};}
+ }
+ mode_v=m;w_v=w;h_v=h;return 0;
+}
 static int FakeGetMode(int *m,int *w,int *h){if(m)*m=mode_v;if(w)*w=w_v;if(h)*h=h_v;return 0;}
 static int FakeSize(void){return edram;}
 static int FakeHwSize(void){return 0x400000;}
-static int FakeSetSize(int n){resize_calls++;if(fail_size)return -1;edram=n;ge_enabled=n==0x400000?2:4;return 0;}
-static int FakeGetReg(int n){return n==19?ge_enabled:n==28?1:0;}
-static int FakeGetFrame(int pri,void **p,int *s,int *f,int sync){(void)sync;Frame v=pri==2?game_frame:layer_frame;*p=(void *)(uintptr_t)v.address;*s=v.stride;*f=v.format;return 0;}
-static int FakeFrame(int pri,void *p,int stride,int format,int sync){(void)sync;frame_calls++;display_frame=(Frame){(uintptr_t)p,stride,format,0};if(pri==0)layer_frame=display_frame;return 0;}
+static int FakeSetSize(int n){edram=n;resize_calls++;return 0;}
+static int FakeGetFrame(int pri,void **p,int *s,int *f,int sync){(void)sync;Frame v=slot_driver?slots[pri][sync]:pri==2?game_frame:layer_frame;*p=(void *)(uintptr_t)v.address;*s=v.stride;*f=v.format;return 0;}
+static int FakeFrame(int pri,void *p,int stride,int format,int sync){(void)sync;frame_calls++;display_frame=(Frame){(uintptr_t)p,stride,format,0};if(pri==0)layer_frame=display_frame;
+ if(slot_driver){slots[pri][sync]=display_frame;if(pri==2)native_rebound[sync]=display_frame;}
+ return 0;}
 static int FakeSavedataInit(void *params){
  assert(params==save_parameter&&current_k1==0x100000);save_calls++;
  assert(save_gate==save_expected_gate);
@@ -54,7 +65,8 @@ static int FakeAsync(SceUID fd,int64_t *result){assert(fd==write_fd&&result==asy
 static int FakeAsyncStat(SceUID fd,int poll,int64_t *result){assert(poll==1);return FakeAsync(fd,result);}
 static int FakeClose(SceUID fd){assert(fd==write_fd&&current_k1==0x100000);return close_result;}
 static void Reset(void){
- manual_native=manual_native_ready=square_down=fail_size=mode_resets_storage=storage_during_sync=0;ge_enabled=4;get_ge_reg=FakeGetReg;
+ assert(intr_depth==0);slot_driver=hold_vblank=native_mode_with_old_layer=inject_native_frames=0;native_wait_reason=NULL;
+ manual_native=manual_native_ready=square_down=dep_only_fail=0;
  memset(async_writes,0,sizeof(async_writes));async_overflow=write_calls=0;
  file_hooks[0].original=file_hooks[1].original=(uintptr_t)FakeWrite;
  for(int i=2;i<=4;i++)file_hooks[i].original=(uintptr_t)FakeAsync;
@@ -193,34 +205,41 @@ int main(void){
  // Utility already open at startup delays activation without a fault latch.
  Reset();utility_kind=1;utility_state=2;AutoControl(MenuVisible(),0);assert(!active&&!auto_fault&&!reserved);
  utility_state=0;utility_kind=0;AutoControl(MenuVisible(),100000);assert(active);
- // A software reservation is insufficient after a hardware size reset.
- Reset();AutoControl(0,0);int storage_jobs=enqueue_calls,storage_resizes=resize_calls;
- ge_enabled=4;assert(edram==0x400000);assert(Render(game_frame,1)==0);
- assert(ge_enabled==2&&edram==0x400000&&resize_calls==storage_resizes+1&&enqueue_calls==storage_jobs+1);
- // Never repair while other GE work is in flight; fall back with no submission.
- ge_enabled=4;ge_busy=1;storage_jobs=enqueue_calls;storage_resizes=resize_calls;
- assert(Render(game_frame,0)==-2&&manual_native&&!active&&pending_list<0);
- assert(enqueue_calls==storage_jobs&&resize_calls==storage_resizes);
- ge_busy=0;AutoControl(0,100);assert(manual_native_ready&&mode_v==0x2d2);
- Reset();AutoControl(0,0);storage_during_sync=1;unsigned storage_draws=draws;
- assert(Render(game_frame,1)==-2&&manual_native&&pending_list<0&&draws==storage_draws);
- // Driver failure also avoids rendering into a possibly mirrored upper bank.
- Reset();AutoControl(0,0);ge_enabled=4;fail_size=1;storage_jobs=enqueue_calls;
- assert(Render(game_frame,1)==-2&&manual_native&&enqueue_calls==storage_jobs);
- fail_size=0;
- // Configure TV mode before copying, and repair even when mode setup itself
- // invalidates the hardware size while leaving software size at 4 MiB.
- Reset();AutoControl(0,0);manual_native=1;AutoControl(0,100);
- mode_resets_storage=1;manual_native=0;next_auto=200;AutoControl(0,200);
- assert(active&&!manual_native&&mode_v==0xd2&&ge_enabled==2&&edram==0x400000);
- assert(display_frame.stride==TV_STRIDE&&display_frame.format==0);
- // Diagnostic native mode isolates active GE/output work while retaining
- // the exact plugin RAM and EDRAM reservation for the same-level test.
- Reset();AutoControl(0,0);int diagnostic_jobs=enqueue_calls,diagnostic_uid=gpu_memory;
+ // Faithful display model: sync0 is live and sync1 is pending. A queued-only
+ // detach would leave the old scaled RGB565 layer live during native mode set.
+ Reset();AutoControl(0,0);slot_driver=1;inject_native_frames=1;
+ memset(slots,0,sizeof(slots));slots[0][0]=slots[0][1]=(Frame){0x04200000,TV_STRIDE,0,0};
+ slots[2][0]=(Frame){0x04000000,512,3,0};slots[2][1]=(Frame){0x04088000,512,3,0};
+ unsigned old_allocations=ge_allocations,old_releases=ge_releases;
+ manual_native=1;AutoControl(0,0);
+ assert(manual_native_ready&&!reserved&&packet==NULL&&ge_context==NULL&&gpu_memory<0&&edram==0x200000);
+ assert(native_mode_with_old_layer==0&&slots[0][0].address==0&&slots[0][1].address==0);
+ assert(native_rebound[0].address==0x04000000&&native_rebound[1].address==0x04088000);
+ assert(native_rebound[0].stride==512&&native_rebound[0].format==1&&native_rebound[1].stride==640&&native_rebound[1].format==3&&ge_releases==old_releases+1);
+ assert(clock_us>=3*16667u&&NativeLayersDetached());
+ slot_driver=0;manual_native=0;next_auto=clock_us;AutoControl(0,clock_us);
+ assert(active&&reserved&&packet&&ge_allocations==old_allocations+1&&edram==0x400000);
+ // A missing scanout fence never releases the bank/workspace.
+ Reset();AutoControl(0,0);hold_vblank=1;manual_native=1;
+ AutoControl(0,0);assert(!manual_native_ready&&reserved&&gpu_memory>=0&&edram==0x400000);
+ hold_vblank=0;AutoControl(0,clock_us);assert(manual_native_ready&&!reserved&&gpu_memory<0);
+ // Another live/pending layer in upper VRAM blocks release, even when our
+ // own layer was detached. Do not unmap somebody else's active scanout.
+ Reset();AutoControl(0,0);slot_driver=1;memset(slots,0,sizeof(slots));
+ slots[0][0]=slots[0][1]=(Frame){0x04200000,TV_STRIDE,0,0};
+ slots[2][0]=slots[2][1]=game_frame;slots[1][0]=slots[1][1]=(Frame){0x04300000,512,0,0};
+ manual_native=1;AutoControl(0,0);assert(reserved&&gpu_memory>=0&&!manual_native_ready&&edram==0x400000);
+ slots[1][0]=slots[1][1]=(Frame){0};AutoControl(0,clock_us);assert(!reserved&&gpu_memory<0&&manual_native_ready);
+ // Global GE activity also postpones unmapping and freeing.
+ Reset();AutoControl(0,0);ge_busy=1;manual_native=1;AutoControl(0,0);
+ assert(reserved&&gpu_memory>=0&&!manual_native_ready);ge_busy=0;
+ AutoControl(0,clock_us);assert(!reserved&&gpu_memory<0&&manual_native_ready);
+ // Native handoff releases all scaler-owned RAM/VRAM after fences.
+ Reset();AutoControl(0,0);int diagnostic_jobs=enqueue_calls;
  unsigned square_chord=PSP_CTRL_LTRIGGER|PSP_CTRL_RTRIGGER|PSP_CTRL_SQUARE;
  pad_buttons=square_chord;PollFilter(0,100);assert(manual_native&&!ScalingVisible());
- AutoControl(0,100);assert(!active&&reserved&&manual_native_ready&&mode_v==0x2d2);
- assert(gpu_memory==diagnostic_uid&&edram==0x400000&&enqueue_calls==diagnostic_jobs&&ready_buffer==NULL);
+ AutoControl(0,100);assert(!active&&!reserved&&manual_native_ready&&mode_v==0x2d2);
+ assert(gpu_memory<0&&packet==NULL&&ge_context==NULL&&edram==0x200000&&enqueue_calls==diagnostic_jobs&&ready_buffer==NULL);
  assert(RenderHome()==1&&RenderWithFilter(game_frame,0,FILTER_SOFT)==-2&&enqueue_calls==diagnostic_jobs);
  int diagnostic_modes=mode_calls;
  AutoControl(0,200);PollFilter(0,200);assert(manual_native&&mode_calls==diagnostic_modes);
@@ -230,7 +249,12 @@ int main(void){
  pad_buttons=0;PollFilter(0,400);pad_buttons=square_chord;PollFilter(0,500);
  assert(!manual_native);AutoControl(0,500);
  assert(active&&mode_v==0xd2&&display_frame.stride==TV_STRIDE&&filter_mode==FILTER_SOFT);
- assert(gpu_memory==diagnostic_uid&&edram==0x400000&&enqueue_calls==diagnostic_jobs+1);
+ assert(gpu_memory>=0&&packet&&edram==0x400000&&enqueue_calls==diagnostic_jobs+1);
+ // Fresh reactivation reallocates GPU storage; a now-unavailable optional
+ // CPU filter falls back safely rather than stopping fullscreen activation.
+ Reset();AutoControl(0,0);manual_native=1;AutoControl(0,100);assert(packet==NULL);
+ filter_mode=FILTER_DEPOSTERISE;dep_only_fail=1;manual_native=0;next_auto=200;AutoControl(0,200);
+ assert(active&&reserved&&gpu_memory>=0&&dep_memory<0&&filter_mode==FILTER_SHARP);
  // Native suppression can also be selected before automatic activation.
  Reset();pad_buttons=square_chord;PollFilter(0,0);AutoControl(0,0);assert(!active&&!reserved&&enqueue_calls==0);
  pad_buttons=0;PollFilter(0,1);pad_buttons=square_chord;PollFilter(0,2);AutoControl(0,2);assert(active);
@@ -361,17 +385,20 @@ int main(void){
  filter_mode=FILTER_DITHER;pad_buttons=0;PollFilter(0,109);alloc_fail=1;
  pad_buttons=chord;PollFilter(0,110);assert(filter_mode==FILTER_SHARP&&dep_memory<0);alloc_fail=0;
  assert(FreeGeMemory()==0);
- puts("R14 storage-resume/diagnostic-native/direct-write/savedata-entry/paused-GE/utility dialog/HOME and GE user-memory checks passed: immediate default-on, TV/source gating, busy retry, fault latch, NODS native status, NULL/kernel output restoration, native menu RGBA5551 GPU scaling, reboot quiesce/scanout cleanup, preserved HOME canvas/stride/format, no HOME resize, automatic resume and in-flight HOME suppression.");
+ puts("R15 fenced-native-release/direct-write/savedata-entry/paused-GE/utility dialog/HOME and GE user-memory checks passed: immediate default-on, TV/source gating, busy retry, fault latch, NODS native status, NULL/kernel output restoration, native menu RGBA5551 GPU scaling, reboot quiesce/scanout cleanup, preserved HOME canvas/stride/format, no HOME resize, automatic resume and in-flight HOME suppression.");
 }
 unsigned TestRead(unsigned off){return off==0?3:off==0x1c?2160:off==0x2c?480:0;}
-int sceKernelCpuSuspendIntr(void){return 0;}void sceKernelCpuResumeIntr(int n){(void)n;}
+int sceKernelCpuSuspendIntr(void){int old=intr_depth;intr_depth++;return old;}void sceKernelCpuResumeIntr(int n){assert(n<intr_depth);intr_depth=n;}
 SceModule *sceKernelFindModuleByName(const char *n){if(input_fixture>=2&&!strcmp(n,"sceUtility_Driver"))return &utility_module;return input_fixture==1&&!strcmp(n,"sceImpose_Driver")?&input_module:NULL;}
 void sceKernelDcacheWritebackInvalidateAll(void){}void sceKernelIcacheInvalidateAll(void){}
 void sceKernelDcacheWritebackRange(const void *p,unsigned n){(void)p;(void)n;}
+void sceKernelDcacheWritebackInvalidateRange(const void *p,unsigned n){assert(p&&n);}
 unsigned pspSdkSetK1(unsigned n){unsigned old=current_k1;current_k1=n;return old;}
 unsigned sceKernelGetSystemTimeLow(void){return clock_us;}
-int sceKernelDelayThread(unsigned n){clock_us+=n;if(save_worker_step&&save_gate&&pending_list<0)AutoControl(MenuVisible(),clock_us);return 0;}
-int sceGeListSync(int a,int b){(void)a;(void)b;if(storage_during_sync){ge_enabled=4;storage_during_sync=0;}if(open_during_render){menu_bits=0x100;open_during_render=0;}if(utility_during_render){utility_kind=1;utility_state=1;sync_invalid=1;utility_during_render=0;}
+int sceKernelDelayThread(unsigned n){assert(intr_depth==0);unsigned previous=clock_us/16667u;clock_us+=n;
+ if(slot_driver&&!hold_vblank&&clock_us/16667u!=previous)for(int i=0;i<4;i++)slots[i][0]=slots[i][1];
+ static int stepping;if(!stepping&&save_worker_step&&save_gate&&pending_list<0){stepping=1;AutoControl(MenuVisible(),clock_us);stepping=0;}return 0;}
+int sceGeListSync(int a,int b){(void)a;(void)b;if(open_during_render){menu_bits=0x100;open_during_render=0;}if(utility_during_render){utility_kind=1;utility_state=1;sync_invalid=1;utility_during_render=0;}
  return sync_paused?4:sync_invalid?(int)0x80000100u:PSP_GE_LIST_DONE;}
 int sceGeListDeQueue(int n){(void)n;return 0;}
 int sceGeListEnQueue(const void *p,void *s,int cb,PspGeListArgs *a){
@@ -397,12 +424,12 @@ void sctrlHENPatchSyscall(void *a,void *b){(void)a;(void)b;}
 SceUID sceKernelAllocPartitionMemory(SceUID partition,const char *name,int type,SceSize bytes,void *addr){
  assert(partition==2&&type==PSP_SMEM_High&&addr==NULL);
  if(!strcmp(name,"GoTVScaleDep")){
-  assert(bytes==DEPOSTER_BYTES+63u);if(alloc_fail)return -1;
+  assert(bytes==DEPOSTER_BYTES+63u);if(alloc_fail||dep_only_fail)return -1;
   assert(!dep_block);dep_block_bytes=(bytes+16+4095u)&~4095u;
   dep_block=mmap((void *)0x09100000,dep_block_bytes,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED_NOREPLACE,-1,0);
   assert(dep_block!=MAP_FAILED);return 43;
  }
- assert(bytes==sizeof(GeWorkspace)+63u);
+ assert(bytes==sizeof(GeWorkspace)+63u);ge_allocations++;
  if(alloc_fail)return -1;
  assert(user_block==NULL);
  user_block_bytes=(bytes+16+4095u)&~4095u;
@@ -410,11 +437,11 @@ SceUID sceKernelAllocPartitionMemory(SceUID partition,const char *name,int type,
  assert(user_block!=MAP_FAILED);return 42;
 }
 void *sceKernelGetBlockHeadAddr(SceUID uid){if(uid==43)return (char *)dep_block+16;assert(uid==42);return bad_head?(void *)0x88000000:(char *)user_block+16;}
-int sceKernelFreePartitionMemory(SceUID uid){if(uid==43){assert(dep_block&&munmap(dep_block,dep_block_bytes)==0);dep_block=NULL;return 0;}assert(uid==42&&user_block);assert(munmap(user_block,user_block_bytes)==0);user_block=NULL;return 0;}
+int sceKernelFreePartitionMemory(SceUID uid){if(uid==43){assert(dep_block&&munmap(dep_block,dep_block_bytes)==0);dep_block=NULL;return 0;}assert(uid==42&&user_block);ge_releases++;assert(munmap(user_block,user_block_bytes)==0);user_block=NULL;return 0;}
 
 int sceIoRead(int fd,void *data,unsigned n){(void)fd;(void)data;(void)n;return -1;}
 
-int sceDisplayGetVcount(void){return clock_us/16667u;}
+int sceDisplayGetVcount(void){return hold_vblank?0:clock_us/16667u;}
 
 int sceCtrlPeekBufferPositive(SceCtrlData *pad,int n){assert(n==1);pad->Buttons=pad_buttons;return 1;}
 SceModule *sceKernelFindModuleByAddress(unsigned a){return input_fixture&&a==0x88002000?&input_owner:NULL;}

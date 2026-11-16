@@ -54,7 +54,7 @@ static unsigned BeginFileWrite(SceUID fd,unsigned bytes,int asynchronous){
 }
 static int GuardWrite(SceUID fd,const void *data,SceSize bytes,int asynchronous){
  FileWriteFn original=(FileWriteFn)file_hooks[asynchronous?1:0].original;
- if(!running||reboot_exit||!reserved||fd<3||!bytes)return original(fd,data,bytes);
+ if(!running||reboot_exit||(!reserved&&!save_gate)||fd<3||!bytes)return original(fd,data,bytes);
  int already_pending=asynchronous&&IsTrackedWrite(fd);
  unsigned caller_k1=BeginFileWrite(fd,bytes,asynchronous);
  int ret=original(fd,data,bytes);pspSdkSetK1(0);
