@@ -1,9 +1,9 @@
 {
   "name": "PSP Go TV Scale Auto + HOME",
-  "revision": 12,
-  "baseline": "R11 handoff works for early savedata call; same-place late freeze has no second savedata entry",
+  "revision": 13,
+  "baseline": "R12 guards work on early calls, same-place Burnout Legends failure has no new save/write entry",
   "psp_build": "passed -Wall -Wextra -Werror",
-  "host_tests": "ASan/UBSan actual-source tests pass for sync partial/error propagation, original fd/data/count/K1, async hold/completion and busy poll, failed duplicate write preserving prior tracking, status/wait/waitCB/close paths, error close retention, stdout/zero-length bypass, resume and prior save/GPU/HOME/input regressions",
+  "host_tests": "ASan/UBSan actual-source tests pass for Square edge/latch, no jobs in native mode including HOME, fixed workspace UID/4MiB reservation, no repeated mode reset, native startup gating, same-preset fresh-frame fullscreen resume, plus prior save/write/GPU/input/HOME regressions",
   "hardware_tested": false,
   "default_filter": "Soft",
   "control": "Hold L+R, tap Triangle; NODS default L1+R1+Triangle",
@@ -21,12 +21,12 @@
     "Deposterise"
   ],
   "deposterise": "CPU separable edge-aware smoothing, 12-level RGB threshold, optional 544 KiB user-partition buffer",
-  "remaining": "Real PSP Go same-level-end test; inspect direct-write markers and native_ready status; crash resolution not established",
+  "remaining": "Run same Burnout Legends event ending after selecting native diagnostic mode, observe outcome and collect log",
   "unchanged": "R7 filters/controls and R6 reboot lifecycle; no game-specific or NODS changes",
-  "change": "Guard direct synchronous/asynchronous user file writes before original operation; track async writes until completion APIs/close, then quiet-window fullscreen resume; new write-path diagnostics",
+  "change": "Diagnostic L+R+Square native output toggle: stop scaler jobs while retaining plugin workspace, EDRAM reservation and installed hooks; restore fullscreen through existing resume path",
   "evidence": {
-    "r11_log": "savedata_init_handoff native_ready1 in20218us around30s, returns0 and resumes. Later log ends273159ms without save entry, timeout, invalid frame or unresolved paused list.",
-    "scope": "Writes on fd>=3 only; no reads, standard streams, zero-length calls or firmware-internal direct kernel I/O. Game log/config writes also trigger native output.",
-    "remaining": "Determine whether end-of-level failure reaches direct-write hooks and whether native handoff prevents it."
+    "r12_log": "Early savedata handoff and direct51-byte write succeed, then fullscreen resumes. Eight paused jobs complete. Log ends456896ms with no later save/write marker, timeouts0, invalid_frames0.",
+    "game": "Burnout Legends, region not provided",
+    "diagnostic_goal": "Separate active scaling/TV output from resident plugin hooks/memory; not a confirmed fix."
   }
 }

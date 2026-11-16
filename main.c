@@ -18,7 +18,7 @@
 #include <stddef.h>
 #include "render.h"
 #include "effects.h"
-PSP_MODULE_INFO("PSPGoTVScaleV1Auto",0x1000,1,12);
+PSP_MODULE_INFO("PSPGoTVScaleV1Auto",0x1000,1,13);
 extern void sctrlHENPatchSyscall(void *,void *);
 static const char *logpath;
 #include "logger.inc"
@@ -67,6 +67,8 @@ static volatile int home_paused,home_scaled_ready,reboot_exit,reboot_late;
 static int reboot_joined,worker_done;
 static volatile int home_output_restored,utility_native_ready;
 static int auto_fault;
+static volatile int manual_native;
+static int manual_native_ready,square_down;
 typedef int (*SavedataInitFn)(void *);
 static SavedataInitFn real_savedata_init;
 static int savedata_hooked;
@@ -90,8 +92,8 @@ static void UpdateSaveGate(unsigned now){
   sceKernelCpuResumeIntr(intr);
 }
 static int MenuVisible(void){return HomeVisible()||UtilityVisible();}
-static int ScalingVisible(void){return running&&!reboot_exit&&active&&!home_paused&&!MenuVisible();}
-static int MenuScalingVisible(void){return running&&!reboot_exit&&home_paused&&home_scaled_ready&&MenuVisible();}
+static int ScalingVisible(void){return running&&!reboot_exit&&!manual_native&&active&&!home_paused&&!MenuVisible();}
+static int MenuScalingVisible(void){return running&&!reboot_exit&&!manual_native&&home_paused&&home_scaled_ready&&MenuVisible();}
 
 #define DEPOSTER_BYTES (512u*272u*4u)
 static SceUID dep_memory=-1;
@@ -140,8 +142,14 @@ static void PollFilter(int menu,unsigned now) {
   int ret=merged_peek?merged_peek(&pad,1):sceCtrlPeekBufferPositive(&pad,1);
   if(ret<=0)return;
   int triangle=(pad.Buttons&PSP_CTRL_TRIANGLE)!=0;
+  int square=(pad.Buttons&PSP_CTRL_SQUARE)!=0;
   unsigned chord=PSP_CTRL_LTRIGGER|PSP_CTRL_RTRIGGER;
-  if(!menu&&!reboot_exit&&pending_list<0&&triangle&&!triangle_down&&(pad.Buttons&chord)==chord) {
+  if(!menu&&!reboot_exit&&pending_list<0&&square&&!square_down&&(pad.Buttons&chord)==chord){
+    manual_native=!manual_native;manual_native_ready=0;next_auto=now;
+    logline("diagnostic_native_requested,%u\n",manual_native);
+  }
+  square_down=square;
+  if(!square&&!menu&&!reboot_exit&&pending_list<0&&triangle&&!triangle_down&&(pad.Buttons&chord)==chord) {
     int next=(filter_mode+1)%FILTER_COUNT;
     if(next==FILTER_DEPOSTERISE&&InitDepMemory()<0){logline("deposterise_memory_unavailable,skipped\n");next=FILTER_SHARP;}
     filter_mode=next;
@@ -400,7 +408,7 @@ static int WaitList(unsigned timeout_us) {
 }
 static int RenderWithFilter(Frame f,unsigned target,int selected_filter) {
   if(!running||reboot_exit||pending_list>=0)return -1;
-  if(UtilityVisible())return -2; // utility renderer may reset the shared GE queue
+  if(manual_native||UtilityVisible())return -2; // utility renderer may reset the shared GE queue
   if(!packet||!ge_context)return -1;
   if(BuildFilteredScalePacket(packet,f,target,aspect,selected_filter)<0){++invalid_frames;return -1;}
   sceKernelDcacheWritebackRange(packet,sizeof(*packet));
@@ -522,6 +530,7 @@ static int PauseForHome(void) {
   return 0;
 }
 static int RenderHome(void) {
+  if(manual_native)return 1;
   if(UtilityVisible())return 1; // No scaler GE submissions during any utility phase.
   if(!home_paused||!reserved||!home_output_restored||!MenuVisible()||reboot_exit)return 1;
   Frame f=Snapshot(&original0);f.address&=0x1fffffffu;
@@ -579,6 +588,21 @@ static int ResumeAfterHome(void) {
 }
 static void AutoControl(int menu,unsigned now) {
   if(auto_fault)return;
+  if(manual_native) {
+    if(!reserved)return; // Loading suppressed, no reservation made yet.
+    if(pending_list>=0)return;
+    active=0;home_paused=1;ReleaseHomeOutput();
+    if(!manual_native_ready){
+      home_output_restored=0;
+      if(PauseForHome()<0)return;
+      if(real_mode(restore_mode,480,272)<0)return;
+      ready_buffer=NULL;manual_native_ready=1;
+      logline("diagnostic_native_ready,edram,%d,gpu_memory,%d,no_scaler_jobs,1\n",get_size(),gpu_memory);
+    }
+    // Save/write guards can acknowledge this already-native layout too.
+    home_output_restored=1;utility_native_ready=1;
+    return;
+  }
   if(menu&&(active||reserved)){active=0;home_paused=1;}
     if(menu) {
       if(home_paused)PauseForHome();
@@ -640,9 +664,9 @@ static void LogMenuLayers(void) {
 }
 static void Report(void) {
   Frame f=Snapshot(&source);
-  logline("stats,ms,%u,active,%u,aspect,%u,presents,%u,draws,%u,queue_gpu_wait_avg_us,%u,max_wait_us,%u,timeouts,%u,invalid_frames,%u,paused_lists,%u,pending,%d,source,0x%08X,stride,%d,format,%d\n",
+  logline("stats,ms,%u,active,%u,aspect,%u,presents,%u,draws,%u,queue_gpu_wait_avg_us,%u,max_wait_us,%u,timeouts,%u,invalid_frames,%u,paused_lists,%u,pending,%d,diagnostic_native,%u,source,0x%08X,stride,%d,format,%d\n",
           sceKernelGetSystemTimeLow()/1000,active,aspect,presentations,draws,
-          draws?(unsigned)(wait_total/draws):0,max_wait,timeouts,invalid_frames,paused_lists,pending_list,f.address,f.stride,f.format);
+          draws?(unsigned)(wait_total/draws):0,max_wait,timeouts,invalid_frames,paused_lists,pending_list,manual_native,f.address,f.stride,f.format);
 }
 static int MainThread(SceSize argc,void *argv) {
   (void)argc;(void)argv;
@@ -650,7 +674,7 @@ static int MainThread(SceSize argc,void *argv) {
   for(unsigned i=0;i<2;++i){SceUID fd=sceIoOpen(paths[i],PSP_O_WRONLY|PSP_O_CREAT|PSP_O_TRUNC,0666);if(fd>=0){logpath=paths[i];sceIoClose(fd);break;}}
   if(!logpath)return 0;
   unsigned fw=sceKernelDevkitVersion();
-  logline("PSPGoTVScale,base,alpha1,variant,auto_home_r12,model,%d,devkit,0x%08X\n",sceKernelGetModel(),fw);
+  logline("PSPGoTVScale,base,alpha1,variant,auto_home_r13,model,%d,devkit,0x%08X\n",sceKernelGetModel(),fw);
   if(sceKernelGetModel()!=4||(fw!=0x06060010&&fw!=0x06060110)){logline("unsupported_model_or_firmware\n");return 0;}
   filter_mode=FILTER_SOFT;logline("filter,%s\n",FilterName(filter_mode));
   if(InitGeMemory()<0)return 0;

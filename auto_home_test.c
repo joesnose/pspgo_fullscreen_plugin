@@ -52,6 +52,7 @@ static int FakeAsync(SceUID fd,int64_t *result){assert(fd==write_fd&&result==asy
 static int FakeAsyncStat(SceUID fd,int poll,int64_t *result){assert(poll==1);return FakeAsync(fd,result);}
 static int FakeClose(SceUID fd){assert(fd==write_fd&&current_k1==0x100000);return close_result;}
 static void Reset(void){
+ manual_native=manual_native_ready=square_down=0;
  memset(async_writes,0,sizeof(async_writes));async_overflow=write_calls=0;
  file_hooks[0].original=file_hooks[1].original=(uintptr_t)FakeWrite;
  for(int i=2;i<=4;i++)file_hooks[i].original=(uintptr_t)FakeAsync;
@@ -190,6 +191,26 @@ int main(void){
  // Utility already open at startup delays activation without a fault latch.
  Reset();utility_kind=1;utility_state=2;AutoControl(MenuVisible(),0);assert(!active&&!auto_fault&&!reserved);
  utility_state=0;utility_kind=0;AutoControl(MenuVisible(),100000);assert(active);
+ // Diagnostic native mode isolates active GE/output work while retaining
+ // the exact plugin RAM and EDRAM reservation for the same-level test.
+ Reset();AutoControl(0,0);int diagnostic_jobs=enqueue_calls,diagnostic_uid=gpu_memory;
+ unsigned square_chord=PSP_CTRL_LTRIGGER|PSP_CTRL_RTRIGGER|PSP_CTRL_SQUARE;
+ pad_buttons=square_chord;PollFilter(0,100);assert(manual_native&&!ScalingVisible());
+ AutoControl(0,100);assert(!active&&reserved&&manual_native_ready&&mode_v==0x2d2);
+ assert(gpu_memory==diagnostic_uid&&edram==0x400000&&enqueue_calls==diagnostic_jobs&&ready_buffer==NULL);
+ assert(RenderHome()==1&&RenderWithFilter(game_frame,0,FILTER_SOFT)==-2&&enqueue_calls==diagnostic_jobs);
+ int diagnostic_modes=mode_calls;
+ AutoControl(0,200);PollFilter(0,200);assert(manual_native&&mode_calls==diagnostic_modes);
+ menu_bits=0x100;AutoControl(1,300);assert(RenderHome()==1&&enqueue_calls==diagnostic_jobs);
+ menu_bits=0;game_frame=(Frame){0x04088000,512,3,0};
+ FrameHook(0,NULL,0,3,1);assert(display_frame.address==0);
+ pad_buttons=0;PollFilter(0,400);pad_buttons=square_chord;PollFilter(0,500);
+ assert(!manual_native);AutoControl(0,500);
+ assert(active&&mode_v==0xd2&&display_frame.stride==TV_STRIDE&&filter_mode==FILTER_SOFT);
+ assert(gpu_memory==diagnostic_uid&&edram==0x400000&&enqueue_calls==diagnostic_jobs+1);
+ // Native suppression can also be selected before automatic activation.
+ Reset();pad_buttons=square_chord;PollFilter(0,0);AutoControl(0,0);assert(!active&&!reserved&&enqueue_calls==0);
+ pad_buttons=0;PollFilter(0,1);pad_buttons=square_chord;PollFilter(0,2);AutoControl(0,2);assert(active);
  // Custom autosaves using direct synchronous writes have no utility status.
  Reset();AutoControl(0,0);current_k1=0x100000;save_worker_step=1;
  write_fd=5;write_data=(const void *)0x12345678;write_size=4096;write_result=2048;
@@ -317,7 +338,7 @@ int main(void){
  filter_mode=FILTER_DITHER;pad_buttons=0;PollFilter(0,109);alloc_fail=1;
  pad_buttons=chord;PollFilter(0,110);assert(filter_mode==FILTER_SHARP&&dep_memory<0);alloc_fail=0;
  assert(FreeGeMemory()==0);
- puts("R12 direct-write/savedata-entry/paused-GE/utility dialog/HOME and GE user-memory checks passed: immediate default-on, TV/source gating, busy retry, fault latch, NODS native status, NULL/kernel output restoration, native menu RGBA5551 GPU scaling, reboot quiesce/scanout cleanup, preserved HOME canvas/stride/format, no HOME resize, automatic resume and in-flight HOME suppression.");
+ puts("R13 diagnostic-native/direct-write/savedata-entry/paused-GE/utility dialog/HOME and GE user-memory checks passed: immediate default-on, TV/source gating, busy retry, fault latch, NODS native status, NULL/kernel output restoration, native menu RGBA5551 GPU scaling, reboot quiesce/scanout cleanup, preserved HOME canvas/stride/format, no HOME resize, automatic resume and in-flight HOME suppression.");
 }
 unsigned TestRead(unsigned off){return off==0?3:off==0x1c?2160:off==0x2c?480:0;}
 int sceKernelCpuSuspendIntr(void){return 0;}void sceKernelCpuResumeIntr(int n){(void)n;}

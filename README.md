@@ -1,10 +1,45 @@
-# PSP Go Fullscreen Plugin — revision 12
+# PSP Go Fullscreen Plugin — revision 13
 
-[Download R12 build and source](pspgo-tv-scale-v1-auto-home-r12.zip) · [Plugin PRX](PSPGoTVScale.prx)
+[Download R13 diagnostic build and source](pspgo-tv-scale-v1-auto-home-r13.zip) · [Plugin PRX](PSPGoTVScale.prx)
 
 Immediate fullscreen scaling with ten live filters. Retains revision 6's
 user-confirmed HOME rendering and return-to-VSH handling, and the user-memory
 GPU fix that removes the opicker dependency.
+
+## Burnout Legends isolation test (R13 diagnostic build)
+
+The R12 log confirms both its early savedata handoff and a direct 51-byte write
+completed successfully. At the later same-place freeze there is no new guarded
+save/write entry, invalid source or timeout. Eight paused GPU jobs completed.
+The user identified Burnout Legends; the crash cause remains unconfirmed.
+
+This build adds a controlled native-output switch. Hold L+R and tap Square
+(default NODS: L1+R1+Square) shortly before finishing the event. The image should
+shrink to ordinary native TV output. Finish the same event and observe whether
+the results/save transition works. Repeat the chord to restore fullscreen after
+the transition. L+R+Triangle still cycles filters; startup still defaults to Soft
+fullscreen. The Square chord is also visible to the game.
+
+Native diagnostic mode drains the owned list, releases the scaled layer and
+restores the native TV geometry. It submits no scaler jobs, including HOME jobs,
+while selected. It retains the exact plugin GPU workspace allocation and 4 MiB
+EDRAM reservation, and leaves existing hooks and save/write guards installed.
+This isolates active scaling/TV output from the resident plugin; it does not
+remove every possible source of plugin interference. Save guards acknowledge
+an already-native layout normally. Returning to fullscreen uses the existing
+resume path with the current native game framebuffer and selected preset.
+
+The log records diagnostic_native_requested, diagnostic_native_ready (including
+actual EDRAM size and workspace ID), and diagnostic_native in stats. During the
+test active should be 0 and draws should stop increasing. Retrieve the log before
+starting another game. A transition that works only in this native mode points
+to active scaling/output; a continued crash requires investigating resident
+hooks/memory and other interactions. This is a diagnostic build, not a claimed
+fix for the crash.
+
+Host checks cover one action per Square press, no GE submissions in native mode,
+HOME suppression, retained workspace/EDRAM, unchanged filter, current-frame resume
+and native selection before startup. Existing save/write/paused-GE tests pass.
 
 ## Direct file-write guard (R12 test build)
 
@@ -126,7 +161,7 @@ Other errors retain the existing fault handling.
 Utility detection still uses export-resolved private type/status getters with
 validated read-only leaf bodies, without application callback APIs or guessed
 data addresses. If these getters are unavailable or unrecognized, detection is
-unavailable. Log banner: auto_home_r12. Look for utility_native_output,
+unavailable. Log banner: auto_home_r13. Look for utility_native_output,
 list_id_retired,idle_fence_passed and system_dialog_closed,scaling_resumed.
 
 Host regressions reproduce the reported invalid-ID failure with both busy and
@@ -223,4 +258,4 @@ reference for all four formats, edge rows/alpha/padding, notice bounds, merged
 input validation, one change per press, HOME suppression, optional allocation
 failure, processed user-RAM texture submission, and the existing HOME/reboot
 regressions. Host tests use fake PSP APIs and do not execute actual GE drawing
-or firmware scheduling. Revision 12 has not been tested on real hardware here.
+or firmware scheduling. Revision 13 has not been tested on real hardware here.
