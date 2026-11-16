@@ -1,10 +1,52 @@
-# PSP Go Fullscreen Plugin — revision 13
+# PSP Go Fullscreen Plugin — revision 14
 
-[Download R13 diagnostic build and source](pspgo-tv-scale-v1-auto-home-r13.zip) · [Plugin PRX](PSPGoTVScale.prx)
+[Download R14 test build and source](pspgo-tv-scale-v1-auto-home-r14.zip) · [Plugin PRX](PSPGoTVScale.prx)
 
 Immediate fullscreen scaling with ten live filters. Retains revision 6's
 user-confirmed HOME rendering and return-to-VSH handling, and the user-memory
 GPU fix that removes the opicker dependency.
+
+## Fullscreen resume validation (R14 test build)
+
+The R13 log confirms native diagnostic mode stopped scaler draws at 32280,
+retained the workspace and 4 MiB reservation, and allowed Burnout Legends' save
+writes to complete. User feedback: turning scaling back on then showed parts
+of the image duplicated with garbling underneath; another toggle crashed.
+The log ends at the request to resume. This identifies an active scaling/output
+interaction, but does not establish the underlying crash mechanism.
+
+R14 checks both software EDRAM size and the GE enabled-size register before
+submitting each scaler job. The upper output buffers require software 4 MiB
+and enabled-size register 19 value 2. A stale reservation is repaired through
+the normal sceGeEdramSetSize driver API only while the whole GE is idle, then
+verified. No arbitrary register values are written. A busy/failed repair, state
+change before submission or state change during drawing selects native fallback
+and prevents publication of that image. The final pre-submit check and enqueue
+run under the same interrupt guard. Address-translation registers are logged
+read-only and are not changed.
+
+Fullscreen resume now waits for GE idle, restores D2 720x480 mode first, verifies
+the actual returned mode, then draws a fresh output frame and publishes it with
+stride768/RGB565. It no longer draws the resumed image before configuring TV mode.
+A failed/deferred resume selects native fallback. Ordinary save/write detection,
+filters and the R13 diagnostic toggle remain.
+
+New records: scaler_storage (software size, enabled register, translation),
+scaler_storage_repair, scaler_native_fallback with reason, and
+scaler_resume_output (address, stride, format, physical mode/geometry and LCDC).
+These will establish whether the hardware size or output state changes on this
+PSP Go. Such a change is a hypothesis, not yet demonstrated by device logs.
+
+Test: replace the PRX and fully restart, use L+R+Square before finishing the same
+event, let the save complete in native mode, then use the chord once to resume.
+Send the log and describe whether duplication returns. This build targets safe
+fullscreen resumption; automatic passage through the original save-time freeze
+remains unconfirmed.
+
+Strict PSP compilation and host tests cover stale hardware size with unchanged
+software reservation, idle-only repair, failed/busy repair without submission,
+mid-draw invalidation, mode setup invalidating the hardware register and correct
+resume mode/stride/format, plus existing lifecycle regressions.
 
 ## Burnout Legends isolation test (R13 diagnostic build)
 
@@ -161,7 +203,7 @@ Other errors retain the existing fault handling.
 Utility detection still uses export-resolved private type/status getters with
 validated read-only leaf bodies, without application callback APIs or guessed
 data addresses. If these getters are unavailable or unrecognized, detection is
-unavailable. Log banner: auto_home_r13. Look for utility_native_output,
+unavailable. Log banner: auto_home_r14. Look for utility_native_output,
 list_id_retired,idle_fence_passed and system_dialog_closed,scaling_resumed.
 
 Host regressions reproduce the reported invalid-ID failure with both busy and
@@ -258,4 +300,4 @@ reference for all four formats, edge rows/alpha/padding, notice bounds, merged
 input validation, one change per press, HOME suppression, optional allocation
 failure, processed user-RAM texture submission, and the existing HOME/reboot
 regressions. Host tests use fake PSP APIs and do not execute actual GE drawing
-or firmware scheduling. Revision 13 has not been tested on real hardware here.
+or firmware scheduling. Revision 14 has not been tested on real hardware here.

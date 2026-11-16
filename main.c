@@ -18,7 +18,7 @@
 #include <stddef.h>
 #include "render.h"
 #include "effects.h"
-PSP_MODULE_INFO("PSPGoTVScaleV1Auto",0x1000,1,13);
+PSP_MODULE_INFO("PSPGoTVScaleV1Auto",0x1000,1,14);
 extern void sctrlHENPatchSyscall(void *,void *);
 static const char *logpath;
 #include "logger.inc"
@@ -29,6 +29,7 @@ typedef int (*SetModeFn)(int,int,int);
 typedef int (*GetModeFn)(int *,int *,int *);
 typedef int (*IntFn)(void);
 typedef int (*SetSizeFn)(int);
+typedef int (*GetRegFn)(int);
 typedef struct __attribute__((aligned(64))) {
   unsigned *address,saved[2],trampoline[4];
 } Hook;
@@ -39,6 +40,7 @@ static GetFrameFn get_frame;
 static GetModeFn get_mode;
 static IntFn get_size,get_hw_size;
 static SetSizeFn set_size;
+static GetRegFn get_ge_reg;
 static volatile int running=1,active,reserved,abort_requested;
 static int hooks_installed,aspect,output_index,restore_mode=0x2d2;
 static SceUID worker=-1;
@@ -336,7 +338,8 @@ static int InstallHooks(void) {
   get_size=(IntFn)Find("sceGE_Manager","sceGe_driver",0x5d28a52b);
   get_hw_size=(IntFn)Find("sceGE_Manager","sceGe_driver",0x547ec5f0);
   set_size=(SetSizeFn)Find("sceGE_Manager","sceGe_driver",0xd8633888);
-  if(!f||!m||!get_frame||!get_mode||!get_size||!get_hw_size||!set_size) {
+  get_ge_reg=(GetRegFn)Find("sceGE_Manager","sceGe_driver",0x1fdb4c62);
+  if(!f||!m||!get_frame||!get_mode||!get_size||!get_hw_size||!set_size||!get_ge_reg) {
     logline("missing_required_exports\n");return -1;
   }
   unsigned *fp=(unsigned *)f,*mp=(unsigned *)m;
@@ -406,15 +409,45 @@ static int WaitList(unsigned timeout_us) {
     sceKernelDelayThread(250);
   }
 }
+static void LogStorage(const char *point){
+  logline("scaler_storage,point,%s,software_size,%d,enabled_reg,%d,trans_disabled,%d,trans_value,%d\n",
+          point,get_size(),get_ge_reg(19),get_ge_reg(28),get_ge_reg(29));
+}
+/* The software reservation can outlive a GE/utility reset. Size register 19
+ * must still select 4 MiB (value 2) before drawing into the upper VRAM bank.
+ * Use the normal driver setter, and only repair while the whole GE is idle. */
+static int EnsureScalerStorage(void){
+  int software=get_size(),enabled=get_ge_reg(19);
+  if(software==0x400000&&enabled==2)return 0;
+  int intr=sceKernelCpuSuspendIntr();
+  if(sceGeDrawSync(1)!=PSP_GE_LIST_DONE){sceKernelCpuResumeIntr(intr);return 1;}
+  int ret=set_size(0x400000),after_size=get_size(),after_reg=get_ge_reg(19);
+  sceKernelCpuResumeIntr(intr);
+  logline("scaler_storage_repair,before_size,%d,before_reg,%d,result,0x%08X,after_size,%d,after_reg,%d\n",software,enabled,(unsigned)ret,after_size,after_reg);
+  return ret>=0&&after_size==0x400000&&after_reg==2?0:-1;
+}
+static void RequireNativeOutput(const char *reason){
+  active=0;home_paused=reserved;home_scaled_ready=0;home_output_restored=0;
+  manual_native=1;manual_native_ready=0;
+  logline("scaler_native_fallback,reason,%s,pending,%d\n",reason,pending_list);
+}
 static int RenderWithFilter(Frame f,unsigned target,int selected_filter) {
   if(!running||reboot_exit||pending_list>=0)return -1;
   if(manual_native||UtilityVisible())return -2; // utility renderer may reset the shared GE queue
   if(!packet||!ge_context)return -1;
+  int storage=EnsureScalerStorage();
+  if(storage){RequireNativeOutput(storage>0?"storage_changed_ge_busy":"storage_validation_failed");return -2;}
   if(BuildFilteredScalePacket(packet,f,target,aspect,selected_filter)<0){++invalid_frames;return -1;}
   sceKernelDcacheWritebackRange(packet,sizeof(*packet));
   PspGeListArgs args={sizeof(args),ge_context,0,NULL};
   list_invalid_logged=list_paused_logged=0;
+  int submit_intr=sceKernelCpuSuspendIntr();
+  // Recheck atomically with submission so a reset cannot slip between checks.
+  if(get_size()!=0x400000||get_ge_reg(19)!=2){
+    sceKernelCpuResumeIntr(submit_intr);RequireNativeOutput("storage_changed_before_submit");return -2;
+  }
   pending_list=sceGeListEnQueue(packet->commands,NULL,-1,&args);
+  sceKernelCpuResumeIntr(submit_intr);
   if(pending_list<0){logline("enqueue_error,0x%08X\n",(unsigned)pending_list);return -1;}
   unsigned start=sceKernelGetSystemTimeLow();
   int ret=WaitList(100000);
@@ -427,6 +460,7 @@ static int RenderWithFilter(Frame f,unsigned target,int selected_filter) {
     next_auto=sceKernelGetSystemTimeLow()+300000u;return -2;
   }
   if(ret<0){++timeouts;abort_requested=1;return -1;}
+  if(get_size()!=0x400000||get_ge_reg(19)!=2){RequireNativeOutput("storage_changed_during_draw");return -2;}
   ++draws;return 0;
 }
 static int Render(Frame f,unsigned target){
@@ -485,6 +519,7 @@ static int Activate(void) {
   if(ret>0)return 1;
   if(ret<0){reserved=0;logline("activation_rejected,ge_busy_or_edram_error\n");return -1;}
   restore_mode=mode;abort_requested=0;output_index=0;
+  LogStorage("activate");
   int rendered=Render(f,0);
   if(rendered==-2){home_paused=reserved;home_output_restored=0;next_auto=sceKernelGetSystemTimeLow()+300000u;return 0;}
   if(rendered<0){if(pending_list<0)Deactivate();return -1;}
@@ -574,17 +609,27 @@ static int ResumeAfterHome(void) {
   if(original.address&&!ValidOutputFrame(original))return 1;
   Capture(&original0,ptr,stride,format);
   if(mode==0x2d2||mode==0x3d2)restore_mode=mode;
+  LogStorage("resume_before_mode");
+  // Reconfigure scanout before producing the first fresh TV-size image.
+  // Do not publish either old output buffer during this transition.
+  if(sceGeDrawSync(1)!=PSP_GE_LIST_DONE)return 1;
+  if(real_mode(0xd2,720,480)<0){RequireNativeOutput("resume_mode_failed");return 1;}
+  LogStorage("resume_after_mode");
+  int actual_mode=-1,actual_w=0,actual_h=0;
+  if(get_mode(&actual_mode,&actual_w,&actual_h)<0||actual_mode!=0xd2||actual_w!=720||actual_h!=480){RequireNativeOutput("resume_mode_verification_failed");return 1;}
   unsigned target=output_index^1;
   int rendered=Render(f,target);
-  if(rendered==-2)return 1;
-  if(rendered<0)return -1;
-  if(MenuVisible())return 1;
+  if(rendered==-2){RequireNativeOutput("resume_image_deferred");return 1;}
+  if(rendered<0){RequireNativeOutput("resume_image_failed");return 1;}
+  if(MenuVisible()){real_mode(restore_mode,480,272);return 1;}
   ready_buffer=(void *)(uintptr_t)(0x04000000u+TV_VRAM_OFFSET+target*TV_FRAME_BYTES);
   home_paused=0;home_scaled_ready=0;home_output_restored=0;utility_native_ready=0;active=1;
-  int ret=real_mode(0xd2,720,480);
-  if(ret>=0&&!MenuVisible())ret=real_frame(0,ready_buffer,TV_STRIDE,0,1);
-  if(ret<0){active=0;home_paused=1;return -1;}
-  output_index=target;logline("system_dialog_closed,scaling_resumed\n");return 0;
+  int ret=real_frame(0,ready_buffer,TV_STRIDE,0,1);
+  if(ret<0){RequireNativeOutput("resume_publish_failed");return 1;}
+  output_index=target;
+  logline("scaler_resume_output,address,0x%08X,stride,%u,format,0,mode,0x%X,width,%d,height,%d,lcdc_x,%u,lcdc_y,%u\n",(unsigned)(uintptr_t)ready_buffer,TV_STRIDE,(unsigned)actual_mode,actual_w,actual_h,Read(0x1c),Read(0x2c));
+  LogStorage("resume_published");
+  logline("system_dialog_closed,scaling_resumed\n");return 0;
 }
 static void AutoControl(int menu,unsigned now) {
   if(auto_fault)return;
@@ -674,7 +719,7 @@ static int MainThread(SceSize argc,void *argv) {
   for(unsigned i=0;i<2;++i){SceUID fd=sceIoOpen(paths[i],PSP_O_WRONLY|PSP_O_CREAT|PSP_O_TRUNC,0666);if(fd>=0){logpath=paths[i];sceIoClose(fd);break;}}
   if(!logpath)return 0;
   unsigned fw=sceKernelDevkitVersion();
-  logline("PSPGoTVScale,base,alpha1,variant,auto_home_r13,model,%d,devkit,0x%08X\n",sceKernelGetModel(),fw);
+  logline("PSPGoTVScale,base,alpha1,variant,auto_home_r14,model,%d,devkit,0x%08X\n",sceKernelGetModel(),fw);
   if(sceKernelGetModel()!=4||(fw!=0x06060010&&fw!=0x06060110)){logline("unsupported_model_or_firmware\n");return 0;}
   filter_mode=FILTER_SOFT;logline("filter,%s\n",FilterName(filter_mode));
   if(InitGeMemory()<0)return 0;

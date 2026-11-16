@@ -1,9 +1,9 @@
 {
   "name": "PSP Go TV Scale Auto + HOME",
-  "revision": 13,
-  "baseline": "R12 guards work on early calls, same-place Burnout Legends failure has no new save/write entry",
+  "revision": 14,
+  "baseline": "R13 native diagnostic mode allows Burnout Legends save with plugin/4MiB reservation retained; resumed scaled image duplicates and later toggle crashes",
   "psp_build": "passed -Wall -Wextra -Werror",
-  "host_tests": "ASan/UBSan actual-source tests pass for Square edge/latch, no jobs in native mode including HOME, fixed workspace UID/4MiB reservation, no repeated mode reset, native startup gating, same-preset fresh-frame fullscreen resume, plus prior save/write/GPU/input/HOME regressions",
+  "host_tests": "ASan/UBSan actual-source regressions pass: stale hardware-only size repaired, busy/failure native fallback without unsafe submission, mid-draw invalidation not published, mode reset repaired before resume with TV stride/format, plus prior diagnostic/save/write/GPU/input/HOME tests",
   "hardware_tested": false,
   "default_filter": "Soft",
   "control": "Hold L+R, tap Triangle; NODS default L1+R1+Triangle",
@@ -21,12 +21,13 @@
     "Deposterise"
   ],
   "deposterise": "CPU separable edge-aware smoothing, 12-level RGB threshold, optional 544 KiB user-partition buffer",
-  "remaining": "Run same Burnout Legends event ending after selecting native diagnostic mode, observe outcome and collect log",
+  "remaining": "Real PSP Go resume test and new storage/output diagnostics; original automatic save-time failure not yet confirmed fixed",
   "unchanged": "R7 filters/controls and R6 reboot lifecycle; no game-specific or NODS changes",
-  "change": "Diagnostic L+R+Square native output toggle: stop scaler jobs while retaining plugin workspace, EDRAM reservation and installed hooks; restore fullscreen through existing resume path",
+  "change": "Check actual GE enabled-size register as well as software reservation; idle-only driver repair, atomic check/enqueue, post-draw validation and native fallback; set/verify TV mode before first resumed frame",
   "evidence": {
-    "r12_log": "Early savedata handoff and direct51-byte write succeed, then fullscreen resumes. Eight paused jobs complete. Log ends456896ms with no later save/write marker, timeouts0, invalid_frames0.",
-    "game": "Burnout Legends, region not provided",
-    "diagnostic_goal": "Separate active scaling/TV output from resident plugin hooks/memory; not a confirmed fix."
+    "r13_log": "Native mode retains4MiB and workspaceUID86651715; draws fixed32280 through native interval. Savedata and 10240/16/63200/4912-byte writes complete. Log ends at native-request0.",
+    "user_feedback": "After re-enabling, parts of scaled image duplicated with garbling underneath; next toggle crashed.",
+    "hypothesis": "Software reservation may not guarantee current upper-VRAM hardware mapping; not proven on hardware.",
+    "firmware_source": "uofw GE register19 selects enabled size, set_size4MiB writes2 and matching sysreg; export1FDB4C62 verified in local Go firmware."
   }
 }

@@ -21,16 +21,18 @@ static SceModule utility_module={.ent_top=&utility_entry,.ent_size=sizeof(utilit
 static int MergedPad(SceCtrlData *pad,int n){(void)n;pad->Buttons=PSP_CTRL_LTRIGGER|PSP_CTRL_RTRIGGER|PSP_CTRL_TRIANGLE;return 1;}
 static void *dep_block;static unsigned dep_block_bytes;
 static int mode_v,w_v,h_v,edram,ge_busy,resize_calls,enqueue_calls,fail_enqueue,open_during_render;
+static int ge_enabled,fail_size,mode_resets_storage,storage_during_sync;
 static int frame_calls,mode_calls,sync_invalid,utility_during_render,sync_paused;
 static Frame game_frame,layer_frame,display_frame;
 static unsigned user_block_bytes;
 static void *user_block;static int alloc_fail,bad_head;
 static int FakeStatus(void){return menu_bits;}
-static int FakeMode(int m,int w,int h){mode_calls++;mode_v=m;w_v=w;h_v=h;return 0;}
+static int FakeMode(int m,int w,int h){mode_calls++;mode_v=m;w_v=w;h_v=h;if(mode_resets_storage)ge_enabled=4;return 0;}
 static int FakeGetMode(int *m,int *w,int *h){if(m)*m=mode_v;if(w)*w=w_v;if(h)*h=h_v;return 0;}
 static int FakeSize(void){return edram;}
 static int FakeHwSize(void){return 0x400000;}
-static int FakeSetSize(int n){edram=n;resize_calls++;return 0;}
+static int FakeSetSize(int n){resize_calls++;if(fail_size)return -1;edram=n;ge_enabled=n==0x400000?2:4;return 0;}
+static int FakeGetReg(int n){return n==19?ge_enabled:n==28?1:0;}
 static int FakeGetFrame(int pri,void **p,int *s,int *f,int sync){(void)sync;Frame v=pri==2?game_frame:layer_frame;*p=(void *)(uintptr_t)v.address;*s=v.stride;*f=v.format;return 0;}
 static int FakeFrame(int pri,void *p,int stride,int format,int sync){(void)sync;frame_calls++;display_frame=(Frame){(uintptr_t)p,stride,format,0};if(pri==0)layer_frame=display_frame;return 0;}
 static int FakeSavedataInit(void *params){
@@ -52,7 +54,7 @@ static int FakeAsync(SceUID fd,int64_t *result){assert(fd==write_fd&&result==asy
 static int FakeAsyncStat(SceUID fd,int poll,int64_t *result){assert(poll==1);return FakeAsync(fd,result);}
 static int FakeClose(SceUID fd){assert(fd==write_fd&&current_k1==0x100000);return close_result;}
 static void Reset(void){
- manual_native=manual_native_ready=square_down=0;
+ manual_native=manual_native_ready=square_down=fail_size=mode_resets_storage=storage_during_sync=0;ge_enabled=4;get_ge_reg=FakeGetReg;
  memset(async_writes,0,sizeof(async_writes));async_overflow=write_calls=0;
  file_hooks[0].original=file_hooks[1].original=(uintptr_t)FakeWrite;
  for(int i=2;i<=4;i++)file_hooks[i].original=(uintptr_t)FakeAsync;
@@ -191,6 +193,27 @@ int main(void){
  // Utility already open at startup delays activation without a fault latch.
  Reset();utility_kind=1;utility_state=2;AutoControl(MenuVisible(),0);assert(!active&&!auto_fault&&!reserved);
  utility_state=0;utility_kind=0;AutoControl(MenuVisible(),100000);assert(active);
+ // A software reservation is insufficient after a hardware size reset.
+ Reset();AutoControl(0,0);int storage_jobs=enqueue_calls,storage_resizes=resize_calls;
+ ge_enabled=4;assert(edram==0x400000);assert(Render(game_frame,1)==0);
+ assert(ge_enabled==2&&edram==0x400000&&resize_calls==storage_resizes+1&&enqueue_calls==storage_jobs+1);
+ // Never repair while other GE work is in flight; fall back with no submission.
+ ge_enabled=4;ge_busy=1;storage_jobs=enqueue_calls;storage_resizes=resize_calls;
+ assert(Render(game_frame,0)==-2&&manual_native&&!active&&pending_list<0);
+ assert(enqueue_calls==storage_jobs&&resize_calls==storage_resizes);
+ ge_busy=0;AutoControl(0,100);assert(manual_native_ready&&mode_v==0x2d2);
+ Reset();AutoControl(0,0);storage_during_sync=1;unsigned storage_draws=draws;
+ assert(Render(game_frame,1)==-2&&manual_native&&pending_list<0&&draws==storage_draws);
+ // Driver failure also avoids rendering into a possibly mirrored upper bank.
+ Reset();AutoControl(0,0);ge_enabled=4;fail_size=1;storage_jobs=enqueue_calls;
+ assert(Render(game_frame,1)==-2&&manual_native&&enqueue_calls==storage_jobs);
+ fail_size=0;
+ // Configure TV mode before copying, and repair even when mode setup itself
+ // invalidates the hardware size while leaving software size at 4 MiB.
+ Reset();AutoControl(0,0);manual_native=1;AutoControl(0,100);
+ mode_resets_storage=1;manual_native=0;next_auto=200;AutoControl(0,200);
+ assert(active&&!manual_native&&mode_v==0xd2&&ge_enabled==2&&edram==0x400000);
+ assert(display_frame.stride==TV_STRIDE&&display_frame.format==0);
  // Diagnostic native mode isolates active GE/output work while retaining
  // the exact plugin RAM and EDRAM reservation for the same-level test.
  Reset();AutoControl(0,0);int diagnostic_jobs=enqueue_calls,diagnostic_uid=gpu_memory;
@@ -338,7 +361,7 @@ int main(void){
  filter_mode=FILTER_DITHER;pad_buttons=0;PollFilter(0,109);alloc_fail=1;
  pad_buttons=chord;PollFilter(0,110);assert(filter_mode==FILTER_SHARP&&dep_memory<0);alloc_fail=0;
  assert(FreeGeMemory()==0);
- puts("R13 diagnostic-native/direct-write/savedata-entry/paused-GE/utility dialog/HOME and GE user-memory checks passed: immediate default-on, TV/source gating, busy retry, fault latch, NODS native status, NULL/kernel output restoration, native menu RGBA5551 GPU scaling, reboot quiesce/scanout cleanup, preserved HOME canvas/stride/format, no HOME resize, automatic resume and in-flight HOME suppression.");
+ puts("R14 storage-resume/diagnostic-native/direct-write/savedata-entry/paused-GE/utility dialog/HOME and GE user-memory checks passed: immediate default-on, TV/source gating, busy retry, fault latch, NODS native status, NULL/kernel output restoration, native menu RGBA5551 GPU scaling, reboot quiesce/scanout cleanup, preserved HOME canvas/stride/format, no HOME resize, automatic resume and in-flight HOME suppression.");
 }
 unsigned TestRead(unsigned off){return off==0?3:off==0x1c?2160:off==0x2c?480:0;}
 int sceKernelCpuSuspendIntr(void){return 0;}void sceKernelCpuResumeIntr(int n){(void)n;}
@@ -348,7 +371,7 @@ void sceKernelDcacheWritebackRange(const void *p,unsigned n){(void)p;(void)n;}
 unsigned pspSdkSetK1(unsigned n){unsigned old=current_k1;current_k1=n;return old;}
 unsigned sceKernelGetSystemTimeLow(void){return clock_us;}
 int sceKernelDelayThread(unsigned n){clock_us+=n;if(save_worker_step&&save_gate&&pending_list<0)AutoControl(MenuVisible(),clock_us);return 0;}
-int sceGeListSync(int a,int b){(void)a;(void)b;if(open_during_render){menu_bits=0x100;open_during_render=0;}if(utility_during_render){utility_kind=1;utility_state=1;sync_invalid=1;utility_during_render=0;}
+int sceGeListSync(int a,int b){(void)a;(void)b;if(storage_during_sync){ge_enabled=4;storage_during_sync=0;}if(open_during_render){menu_bits=0x100;open_during_render=0;}if(utility_during_render){utility_kind=1;utility_state=1;sync_invalid=1;utility_during_render=0;}
  return sync_paused?4:sync_invalid?(int)0x80000100u:PSP_GE_LIST_DONE;}
 int sceGeListDeQueue(int n){(void)n;return 0;}
 int sceGeListEnQueue(const void *p,void *s,int cb,PspGeListArgs *a){
