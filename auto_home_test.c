@@ -101,6 +101,21 @@ static void Reset(void){
  assert(!((uintptr_t)packet&63)&&!((uintptr_t)ge_context&63));
 }
 int main(void){
+ // Rapidly retired IDs without a real menu must never remove scaled output.
+ Reset();AutoControl(0,0);void *kept_output=ready_buffer;
+ int kept_modes=mode_calls,kept_frames=frame_calls;unsigned kept_draws=draws;
+ for(int retired=0;retired<50;retired++){
+  sync_invalid=1;assert(Render(game_frame,1)==-2&&pending_list<0);
+  assert(active&&!home_paused&&ready_buffer==kept_output&&draws==kept_draws);
+  AutoControl(0,clock_us);assert(mode_calls==kept_modes&&frame_calls==kept_frames);
+ }
+ sync_invalid=0;assert(Render(game_frame,1)==0&&draws==kept_draws+1);
+ // A game clearing layer zero must not expose its 480-wide buffer at 720 mode.
+ FrameHook(0,NULL,0,3,1);
+ assert(Snapshot(&original0).address==0&&display_frame.address==(uintptr_t)ready_buffer&&display_frame.stride==768&&display_frame.format==0);
+ // A genuine HOME clear must still pass through unchanged.
+ menu_bits=0x100;FrameHook(0,NULL,0,3,1);assert(display_frame.address==0);
+
  Reset();AutoControl(0,0); // First ready sample activates immediately.
  assert(active&&reserved&&draws==1&&mode_v==0xd2&&w_v==720&&h_v==480&&display_frame.address==0x04200000);
  // NODS consumes Sony PS. Native HOME status alone stops substitution.
@@ -340,9 +355,9 @@ int main(void){
  assert(active&&!home_paused&&!auto_fault&&mode_v==0xd2&&display_frame.stride==TV_STRIDE);
  // A still-busy invalid ID retains the packet until a later idle poll.
  Reset();AutoControl(0,0);sync_invalid=ge_busy=1;
- assert(Render(game_frame,1)==-2&&pending_list==7&&!timeouts&&!abort_requested);
+ assert(Render(game_frame,1)==-2&&pending_list==7&&!timeouts&&!abort_requested&&active&&!home_paused);
  assert(FreeGeMemory()<0);ge_busy=0;assert(WaitList(1000)==1);sync_invalid=0;
- AutoControl(0,clock_us+300000);assert(home_output_restored);
+ AutoControl(0,clock_us+300000);assert(active&&!home_paused&&!home_output_restored);
  AutoControl(0,clock_us+600000);assert(active&&!auto_fault);
  // Validate the same kernel merged positive-peek target as Impose uses.
  Reset();input_fixture=1;ResolveInput();assert((uintptr_t)merged_peek==0x88002000u);
@@ -375,7 +390,7 @@ int main(void){
  filter_mode=FILTER_DITHER;pad_buttons=0;PollFilter(0,109);alloc_fail=1;
  pad_buttons=chord;PollFilter(0,110);assert(filter_mode==FILTER_SHARP&&dep_memory<0);alloc_fail=0;
  assert(FreeGeMemory()==0);
- puts("Simple R23 automatic startup/filter cycle/native toggle/utility dialog/HOME/paused-GE and GE user-memory checks passed: immediate default-on, TV/source gating, busy retry, fault latch, NODS native status, NULL/kernel output restoration, native menu RGBA5551 GPU scaling, reboot quiesce/scanout cleanup, preserved HOME canvas/stride/format, no HOME resize, automatic resume and in-flight HOME suppression.");
+ puts("Simple R24 retired-ID stability plus automatic startup/filter cycle/native toggle/utility dialog/HOME/paused-GE and GE user-memory checks passed: immediate default-on, TV/source gating, busy retry, fault latch, NODS native status, NULL/kernel output restoration, native menu RGBA5551 GPU scaling, reboot quiesce/scanout cleanup, preserved HOME canvas/stride/format, no HOME resize, automatic resume and in-flight HOME suppression.");
 }
 unsigned TestRead(unsigned off){return off==0?3:off==0x1c?(lcd_force_scaled?2160:slot_driver?(hardware_width==720?2160:2040):(mode_v==0xd2?2160:2040)):off==0x2c?480:0;}
 int sceKernelIsIntrContext(void){return 0;}

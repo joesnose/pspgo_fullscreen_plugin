@@ -1,9 +1,24 @@
-# PSP Go Fullscreen Plugin — Simple R23
+# PSP Go Fullscreen Plugin — Simple R24
 
-[Download Simple R23 build and source](PSPGoTVScale-simple-r23.zip) · [PRX](PSPGoTVScale.prx)
+[Download Simple R24 build and source](PSPGoTVScale-simple-r24.zip) · [PRX](PSPGoTVScale.prx)
 
 Automatic fullscreen TV scaling for PSP Go on ARK, 6.60/6.61, progressive
 component output. Starts enabled with Soft filtering. No INI is needed.
+
+## R24 display stability
+
+The Assassin's Creed R23 log contains about 600 retired-list events and 355
+scaling resumes despite one real utility cycle. An unconfirmed/paused/retired
+scaler frame now leaves the last confirmed scaled buffer selected during normal
+gameplay. It no longer invokes the native/menu restore path without a real HOME
+or utility transition. Retired IDs still require global idle before packet reuse;
+a paused list is still retained until completion. Unconfirmed frames are discarded.
+
+Clearing the top game display layer while scaling now keeps the scaled layer
+selected instead of exposing a native framebuffer under 720-wide scanout. The
+original clear is recorded and genuine menu/utility clears still pass through.
+These changes target the observed quartered/fullscreen flicker, but require
+real-game verification. Controls and all twelve filters remain unchanged.
 
 ## Controls
 
@@ -45,7 +60,7 @@ silent end-of-race save crash; the system save/load dialog fix is retained.
 
 Basic queued diagnostic logging remains at ef0:/PSPGoTVScale.txt (ms0:/ fallback).
 Hooks queue messages in fixed memory; the worker writes them outside interrupt
-context. The banner identifies simple_r23. No clocks, DDR unlocks, NODS binary
+context. The banner identifies simple_r24. No clocks, DDR unlocks, NODS binary
 changes or VSH volume work are included.
 
 ## Install
@@ -70,3 +85,5 @@ Strict PSP build and ASan/UBSan host checks pass: actual-source startup/controls
 HOME/utility/native/reboot handling, 144 GPU format/stride/aspect/buffer cases,
 192 filter cases including new sample footprints/weights/UV bounds, CPU effects,
 and queued logger safety. Host tests do not execute real PSP hardware.
+
+New actual-source checks repeatedly retire 50 list IDs without a menu and verify no output/mode handoff or unconfirmed-frame publication, then verify successful rendering resumes. Layer-clear substitution and genuine HOME clearing are also checked.

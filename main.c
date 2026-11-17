@@ -18,7 +18,7 @@
 #include <stddef.h>
 #include "render.h"
 #include "effects.h"
-PSP_MODULE_INFO("PSPGoTVScaleV1Auto",0x1000,1,23);
+PSP_MODULE_INFO("PSPGoTVScaleV1Auto",0x1000,1,24);
 extern void sctrlHENPatchSyscall(void *,void *);
 static const char *logpath;
 #include "logger.inc"
@@ -261,7 +261,7 @@ static int FrameHook(int pri,void *ptr,int stride,int format,int sync) {
   if(pri==0) {
     Frame proposed={(uintptr_t)ptr,stride,format,0};
     if(!reserved||!ptr||ValidOutputFrame(proposed))Capture(&original0,ptr,stride,format);
-    if((ScalingVisible()||MenuScalingVisible())&&ptr&&ready_buffer){ptr=ready_buffer;stride=TV_STRIDE;format=0;}
+    if((ScalingVisible()||(MenuScalingVisible()&&ptr))&&ready_buffer){ptr=ready_buffer;stride=TV_STRIDE;format=0;}
   }
   return real_frame(pri,ptr,stride,format,sync);
 }
@@ -393,10 +393,14 @@ static int RenderWithFilter(Frame f,unsigned target,int selected_filter) {
   unsigned elapsed=sceKernelGetSystemTimeLow()-start;
   wait_total+=elapsed;if(elapsed>max_wait)max_wait=elapsed;
   if(ret==1||ret==-2||ret==-3) {
-    // The image is not ready (retired or still paused). Re-enter the restore
-    // path instead of publishing an unfinished buffer or latching a fault.
-    active=0;home_paused=reserved;home_scaled_ready=0;home_output_restored=0;
-    next_auto=sceKernelGetSystemTimeLow()+300000u;return -2;
+    // Discard the uncertain frame, not the last known-good scanout. A game
+    // can retire an ID before our polling thread observes DONE; that alone
+    // is not a HOME/utility transition. Storage is still fenced by WaitList.
+    if(MenuVisible()){
+      active=0;home_paused=reserved;home_scaled_ready=0;home_output_restored=0;
+      next_auto=sceKernelGetSystemTimeLow()+300000u;
+    }
+    return -2;
   }
   if(ret<0){++timeouts;abort_requested=1;return -1;}
   ++draws;return 0;
@@ -659,7 +663,7 @@ static int MainThread(SceSize argc,void *argv) {
   for(unsigned i=0;i<2;++i){SceUID fd=sceIoOpen(paths[i],PSP_O_WRONLY|PSP_O_CREAT|PSP_O_TRUNC,0666);if(fd>=0){logpath=paths[i];sceIoClose(fd);break;}}
   if(!logpath)return 0;
   unsigned fw=sceKernelDevkitVersion();
-  logline("PSPGoTVScale,base,alpha1,variant,simple_r23,model,%d,devkit,0x%08X\n",sceKernelGetModel(),fw);
+  logline("PSPGoTVScale,base,alpha1,variant,simple_r24,model,%d,devkit,0x%08X\n",sceKernelGetModel(),fw);
   if(sceKernelGetModel()!=4||(fw!=0x06060010&&fw!=0x06060110)){logline("unsupported_model_or_firmware\n");FlushLogs(LOG_QUEUE_CAPACITY);return 0;}
   filter_mode=FILTER_SOFT;logline("filter,%s\n",FilterName(filter_mode));
   if(InitGeMemory()<0){FlushLogs(LOG_QUEUE_CAPACITY);return 0;}

@@ -1,6 +1,6 @@
 {
-  "variant": "Simple R23",
-  "revision": 23,
+  "variant": "Simple R24",
+  "revision": 24,
   "hardware_tested": false,
   "psp_build": "passed -Wall -Wextra -Werror",
   "host_tests": [
@@ -25,5 +25,8 @@
     "file-write hooks",
     "savedata-entry syscall hook"
   ],
-  "limitation": "system dialog fixes retained; separate Burnout silent autosave crash not claimed fixed"
+  "limitation": "system dialog fixes retained; separate Burnout silent autosave crash not claimed fixed",
+  "change": "Retired/paused list results preserve last confirmed scaled scanout outside real dialogs; substitute active game layer clears",
+  "evidence": "Assassin Creed R23 log ~600 retired events,355 resumes versus one utility cycle",
+  "new_tests": "50 invalid-ID frames keep active output without mode/frame handoffs; rendering resumes; game NULL clear substituted, real HOME clear passed through"
 }
