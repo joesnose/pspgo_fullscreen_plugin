@@ -1,7 +1,7 @@
 #include "effects.h"
 #include <string.h>
 const char *FilterName(int f){
- static const char *names[]={"Sharp","Soft","Blur","CRT","Soft CRT","RGB Mask","Sharpen","Posterise","Dither","Deposterise"};
+ static const char *names[]={"Sharp","Soft","Softer","Blur","Blurrier","CRT","Soft CRT","RGB Mask","Sharpen","Posterise","Dither","Deposterise"};
  return f>=0&&f<FILTER_COUNT?names[f]:"Unknown";
 }
 static int Close(unsigned a,unsigned b){

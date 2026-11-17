@@ -10,7 +10,7 @@ int main(void){
  for(int mode=0;mode<FILTER_COUNT;++mode)for(int fmt=0;fmt<4;++fmt)for(int aspect=0;aspect<2;++aspect)for(unsigned target=0;target<2;++target){
   assert(BuildFilteredScalePacket(&p,(Frame){0x09400000,512,fmt,0},target,aspect,mode)==0);
   assert(p.count<256&&p.commands[p.count-2]==0x0f000000&&p.commands[p.count-1]==0x0c000000);
-  int passes=mode==FILTER_BLUR?5:mode==FILTER_SHARPEN?6:1,width=aspect?540:720,left=(720-width)/2;
+  int passes=mode==FILTER_SOFTER?4:(mode==FILTER_BLUR||mode==FILTER_BLURRIER)?5:mode==FILTER_SHARPEN?6:1,width=aspect?540:720,left=(720-width)/2;
   for(int pass=0;pass<passes;++pass)for(int i=0;i<15;++i){
    ScaleVertex a=p.vertices[pass*30+i*2],b=p.vertices[pass*30+i*2+1];
    assert(a.x==left+i*width/15&&b.x==left+(i+1)*width/15);
@@ -23,9 +23,9 @@ int main(void){
    if(c==4&&v==((6u<<16)|480u))scandraws++;
    if(c==0xc6){assert(v==(mode==FILTER_SHARP?0u:0x101u));filter++;}
    if(c==0xe0)weight=v;
-   if(c==0xe1&&mode==FILTER_BLUR){assert(weight+v==0xffffffu);weights++;} // constant image retains brightness
+   if(c==0xe1&&(mode==FILTER_BLUR||mode==FILTER_BLURRIER||mode==FILTER_SOFTER)){assert(weight+v==0xffffffu);weights++;} // constant image retains brightness
   }
-  assert(filter==1&&texdraws==passes&&scandraws==(mode==FILTER_CRT||mode==FILTER_SOFT_CRT)&&weights==(mode==FILTER_BLUR?4:0));
+  assert(filter==1&&texdraws==passes&&scandraws==(mode==FILTER_CRT||mode==FILTER_SOFT_CRT)&&weights==(mode==FILTER_SOFTER?3:(mode==FILTER_BLUR||mode==FILTER_BLURRIER)?4:0));
   if(mode==FILTER_CRT)for(int i=0;i<240;++i){
    ClearVertex a=p.scanlines[i*2],b=p.scanlines[i*2+1];
    assert(a.color==0x40000000u&&b.color==a.color&&a.x==left&&b.x==left+width);
@@ -49,6 +49,18 @@ int main(void){
   cases++;
  }
  assert(BuildFilteredScalePacket(&p,(Frame){0x09400000,512,3,0},0,0,FILTER_COUNT)<0);
+ Frame sample={0x09400000,512,3,0};
+ BuildFilteredScalePacket(&p,sample,0,0,FILTER_BLUR);float blur_v=p.vertices[30].v;
+ BuildFilteredScalePacket(&p,sample,0,0,FILTER_BLURRIER);
+ assert(fabsf(p.vertices[31].v-(271.5f-1.5f))<0.0001f);
+ // Interior horizontal coordinates verify the radius before edge clamping.
+ BuildFilteredScalePacket(&p,sample,0,0,FILTER_BLUR);float blur_u=p.vertices[30+14].u;
+ BuildFilteredScalePacket(&p,sample,0,0,FILTER_BLURRIER);float blurrier_u=p.vertices[30+14].u;
+ float neutral=0.5f+224.f*(479.f/480.f);
+ assert(fabsf((blurrier_u-neutral)-2.f*(blur_u-neutral))<0.0001f);
+ BuildFilteredScalePacket(&p,sample,0,0,FILTER_SOFTER);
+ assert(fabsf(p.vertices[14].u-(neutral-0.5f))<0.0001f&&blur_v>=0.5f);
+ assert(!strcmp(FilterName(FILTER_SOFTER),"Softer")&&!strcmp(FilterName(FILTER_BLURRIER),"Blurrier"));
  assert(SmoothBandPixel(0xff101010,0xff141414,0xff181818)==0xff141414);
  assert(SmoothBandPixel(0xff000000,0xff141414,0xffffffff)==0xff141414);
  assert(SmoothBandPixel(0xff101010,0x40141414,0xff141414)==0x40131313);

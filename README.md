@@ -1,58 +1,72 @@
-# PSP Go Fullscreen Plugin — R22 EDRAM comparison
+# PSP Go Fullscreen Plugin — Simple R23
 
-R21 Complete succeeded with the user-RAM workspace retained, native scanout,
-2 MiB EDRAM and no scaler jobs. R22 adds native scanout with the same user-RAM
-allocation and no scaler jobs, but retains 4 MiB EDRAM. This is a diagnostic,
-not a claimed crash fix. It uses R20 queued logging.
+[Download Simple R23 build and source](PSPGoTVScale-simple-r23.zip) · [PRX](PSPGoTVScale.prx)
 
-## Test
+Automatic fullscreen TV scaling for PSP Go on ARK, 6.60/6.61, progressive
+component output. Starts enabled with Soft filtering. No INI is needed.
 
-Install the PRX and fully restart. Keep Soft and the default GUARD profile.
-Before selecting Complete at the usual race ending, hold L+R and tap SELECT
-ONCE. Release, wait two seconds, then select Complete. Copy
- ef0:/PSPGoTVScale.txt before launching another game and report success/freeze.
-Default NODS controller chord is L1+R1+SELECT.
+## Controls
 
-A single press now leaves physical EDRAM at 4 MiB. Look for
- user_memory,point,native_retained_4m and edram,4194304,held_edram,1 in the log.
-The visible image is native-sized, the user buffers remain allocated, and
-there are no new scaler GPU submissions. The game's public size query remains
-2 MiB, as during normal scaling, while actual driver EDRAM remains 4 MiB.
-Native display-mode reporting and save-hook bypass match the previous native
-comparison; extended bank ownership is tracked separately from active scaling.
+- Hold L+R and tap Triangle: next filter. Release Triangle between presses.
+- Hold L+R and tap Square: switch fullscreen scaling off/on.
+- HOME works normally, including NODS external-controller HOME.
 
-Optional comparison after a failed first attempt: restart, reproduce the same
-setup, press SELECT once and wait two seconds, then release and press SELECT
-AGAIN. Wait two seconds and select Complete. This shrinks EDRAM to 2 MiB while
-retaining user RAM, matching the R21 successful condition. A THIRD SELECT frees
-user RAM too. Each tap requires L+R. Do not press multiple times in the first test.
+Default NODS equivalents use L1+R1 with Triangle or Square. Native HOME and
+system save/load dialogs yield to their own output; fullscreen resumes after
+closing them unless scaling was switched off manually. Selecting off restores
+native display/2 MiB EDRAM and frees scaler user-RAM buffers after safe fences.
 
-L+R+Square returns to scaling from ready native output. Held EDRAM is first
-released under native scanout/GE-idle checks before reactivation. Reboot cleanup
-also releases the held bank. The existing display handoff order and geometry
-checks are retained. L+R+Triangle filters and L+R+Circle profiles remain while
-scaled. Do not change filters or profiles between comparison attempts.
+## Filters
 
-## Interpretation
+Sharp → Soft → Softer → Blur → Blurrier → CRT → Soft CRT → RGB Mask → Sharpen →
+Posterise → Dither → Deposterise → Sharp.
 
-If Complete fails with 4 MiB but succeeds with 2 MiB under native/no-jobs output,
-expanded EDRAM/driver state becomes a stronger suspect. If 4 MiB native passes,
-4 MiB state alone is insufficient in that attempt; active scaler rendering or
-its interaction with the game remains a suspect. Neither outcome alone identifies
-the exact failing instruction or proves an out-of-memory condition.
+Soft remains the default bilinear pass. Softer averages four bilinear samples
+at ±0.5 source-pixel diagonal offsets, broadening the smoothing footprint.
+Blur retains its five-sample average at ±0.75 offsets; Blurrier uses the same
+five passes at ±1.5, exactly twice the sampling radius. Perceived softness is
+image-dependent, so the two presets target stronger smoothing rather than a
+precise perceptual multiplier. Only the current frame is sampled; no temporal
+feedback is added. Softer/Blurrier cost more GPU work than Soft. Native HOME
+always uses Soft independently of the game filter.
 
-Logs include partition-2 total/largest free blocks, buffer IDs, actual EDRAM
-size and held flag once per second and at transitions. Queued tail messages can
-be lost on hard freeze. Fallback path is ms0:/PSPGoTVScale.txt.
+All previous filters are retained. Deposterise uses an optional 544 KiB CPU
+buffer and can be slower; it is allocated only when that mode is selected.
 
-## Build and checks
+## Simplified scope
+
+Retains the working HOME rendering/reboot cleanup, native switch geometry
+verification, firmware utility save/load detection, automatic resume, and
+paused/retired GE-list handling. Experimental Circle profiles, Select memory
+controls, memory measurements, GE-context syscall hooks, direct file-write
+hooks and savedata-entry syscall hooks have been removed. Only the two requested
+button chords remain. This is not a claimed fix for Burnout Legends' separate
+silent end-of-race save crash; the system save/load dialog fix is retained.
+
+Basic queued diagnostic logging remains at ef0:/PSPGoTVScale.txt (ms0:/ fallback).
+Hooks queue messages in fixed memory; the worker writes them outside interrupt
+context. The banner identifies simple_r23. No clocks, DDR unlocks, NODS binary
+changes or VSH volume work are included.
+
+## Install
+
+Fully power off, replace ef0:/SEPLUGINS/PSPGoTVScale.prx, and restart. Keep one
+GAME plugin entry:
+
+    game, ef0:/SEPLUGINS/PSPGoTVScale.prx, on
+
+Check fullscreen startup, Triangle filter cycling, Square off/on, HOME cancel
+and game exit, and the game's normal system save/load dialog. Hardware behaviour
+of this exact combined build still needs confirmation.
+
+## Build and verification
 
     docker run --rm -v "$PWD":/src -w /src pspdev/pspdev:latest make -j4
 
-    cc -DHOST_TEST -D_GNU_SOURCE -O1 -g -std=c11 -Wall -Wextra -Werror -Wno-pointer-to-int-cast -Wno-int-to-pointer-cast -fsanitize=address,undefined auto_home_test.c render.c effects.c -o /tmp/edram-test
-    /tmp/edram-test
+    cc -DHOST_TEST -D_GNU_SOURCE -O1 -g -std=c11 -Wall -Wextra -Werror -Wno-pointer-to-int-cast -Wno-int-to-pointer-cast -fsanitize=address,undefined auto_home_test.c render.c effects.c -o /tmp/simple-test
+    /tmp/simple-test
 
-Strict PSP compilation and ASan/UBSan actual-source regressions pass, covering
-4 MiB native retention with unchanged RAM IDs/no jobs, public size masking,
-separate 2 MiB shrink, later RAM release, direct resume and reboot bank cleanup,
-plus previous native/load/HOME/input checks. R22 has not run on device yet.
+Strict PSP build and ASan/UBSan host checks pass: actual-source startup/controls,
+HOME/utility/native/reboot handling, 144 GPU format/stride/aspect/buffer cases,
+192 filter cases including new sample footprints/weights/UV bounds, CPU effects,
+and queued logger safety. Host tests do not execute real PSP hardware.

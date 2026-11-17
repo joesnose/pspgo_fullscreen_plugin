@@ -48,13 +48,17 @@ int BuildFilteredScalePacket(ScalePacket *p,Frame s,unsigned output,int aspect,i
   int width=aspect?540:720,left=(720-width)/2;
   static const float dx[6]={0,-0.75f,0.75f,-0.75f,0.75f,0};
   static const float dy[6]={0,-0.75f,-0.75f,0.75f,0.75f,0};
-  int passes=filter==FILTER_BLUR?5:filter==FILTER_SHARPEN?6:1;
+  int passes=filter==FILTER_SOFTER?4:(filter==FILTER_BLUR||filter==FILTER_BLURRIER)?5:filter==FILTER_SHARPEN?6:1;
   for(int pass=0;pass<passes;++pass) {
+    float offset_x=dx[pass],offset_y=dy[pass];
+    // Softer averages four bilinear samples; Blurrier doubles Blur's radius.
+    if(filter==FILTER_SOFTER){offset_x=dx[pass+1]*(2.f/3.f);offset_y=dy[pass+1]*(2.f/3.f);}
+    if(filter==FILTER_BLURRIER){offset_x*=2.f;offset_y*=2.f;}
     ScaleVertex *vertices=&p->vertices[pass*30];
     for(int i=0;i<15;++i) {
       int a=i*32,b=a+32;
-      float u0=0.5f+a*(479.f/480.f)+dx[pass],u1=0.5f+b*(479.f/480.f)+dx[pass];
-      float v0=0.5f+dy[pass],v1=271.5f+dy[pass];
+      float u0=0.5f+a*(479.f/480.f)+offset_x,u1=0.5f+b*(479.f/480.f)+offset_x;
+      float v0=0.5f+offset_y,v1=271.5f+offset_y;
       if(u0<0.5f)u0=0.5f;
       if(u1>479.5f)u1=479.5f;
       if(v0<0.5f)v0=0.5f;

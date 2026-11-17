@@ -1,10 +1,29 @@
 {
-  "revision": 22,
-  "variant": "native EDRAM comparison",
-  "baseline": "R21 native retained user RAM plus 2MiB EDRAM passed Complete on user device",
-  "change": "first SELECT retains physical4MiB EDRAM plus user RAM under native no-jobs output; second SELECT shrinks to2MiB; third frees RAM",
-  "psp_build": "passed -Wall -Wextra -Werror",
+  "variant": "Simple R23",
+  "revision": 23,
   "hardware_tested": false,
-  "host_tests": "ASan/UBSan actual-source suite passes with native4MiB retention, size masking, staged shrink/free, direct resume and reboot cleanup",
-  "limitations": "diagnostic only; outcome distinguishes conditions, not exact cause"
+  "psp_build": "passed -Wall -Wextra -Werror",
+  "host_tests": [
+    "actual-source startup/controls/HOME/utility/native/reboot regressions ASan/UBSan",
+    "144 GPU format/stride/aspect/buffer cases",
+    "192 filter cases, new offsets/weights and bounded packets",
+    "deposterise reference and queued logger regressions"
+  ],
+  "controls": [
+    "L+R+Triangle filters",
+    "L+R+Square fullscreen/native"
+  ],
+  "new_filters": {
+    "Softer": "4 bilinear samples at \u00b10.5 offsets",
+    "Blurrier": "5 samples, twice Blur sampling radius \u00b11.5"
+  },
+  "removed": [
+    "Circle profiles",
+    "Select memory modes",
+    "memory measurements",
+    "GE-context API hooks",
+    "file-write hooks",
+    "savedata-entry syscall hook"
+  ],
+  "limitation": "system dialog fixes retained; separate Burnout silent autosave crash not claimed fixed"
 }

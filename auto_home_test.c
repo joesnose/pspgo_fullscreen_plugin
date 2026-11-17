@@ -7,8 +7,6 @@
 #include <stdio.h>
 #include <sys/mman.h>
 static unsigned clock_us,menu_bits,pad_buttons,current_k1;
-static int save_worker_step,save_calls,save_result,save_expected_gate,save_expected_ready,save_returns_status;
-static void *save_parameter;
 static int utility_kind,utility_state;
 static int FakeUtilityType(void){return utility_kind;}
 static int FakeUtilityStatus(void){return utility_state;}
@@ -82,54 +80,13 @@ static int FakeFrame(int pri,void *p,int stride,int format,int sync){
  if(pri==0)layer_frame=display_frame;
  return 0;
 }
-static int FakeSavedataInit(void *params){
- assert(params==save_parameter&&current_k1==0x100000);save_calls++;
- assert(save_gate==save_expected_gate);
- if(save_expected_ready)assert(utility_native_ready&&home_output_restored&&pending_list<0&&mode_v==0x2d2);
- utility_kind=save_returns_status?1:0;utility_state=save_returns_status;
- return save_result;
-}
-static int write_fd,write_calls,write_result,async_result_code,close_result;
-static const void *write_data;
-static unsigned write_size;
-static int64_t *async_result_pointer;
-static int FakeWrite(SceUID fd,const void *data,SceSize size){
- assert(fd==write_fd&&data==write_data&&size==write_size&&current_k1==0x100000);
- write_calls++;return write_result;
-}
-static int FakeAsync(SceUID fd,int64_t *result){assert(fd==write_fd&&result==async_result_pointer&&current_k1==0x100000);return async_result_code;}
-static int FakeAsyncStat(SceUID fd,int poll,int64_t *result){assert(poll==1);return FakeAsync(fd,result);}
-static int FakeClose(SceUID fd){assert(fd==write_fd&&current_k1==0x100000);return close_result;}
-static PspGeContext *context_parameter;
-static int context_calls,context_result,context_expected_pending,ge_worker_step,inject_ge_entry;
-static int break_mode;static void *break_argument;
-static int FakeContext(PspGeContext *context){
- assert(context==context_parameter&&current_k1==0x100000&&intr_depth==0);
- assert(pending_list==context_expected_pending);context_calls++;
- if(reserved){
-  assert(ge_api_entries==1);
-  if(test_profile&1u){int jobs=enqueue_calls;assert(Render(game_frame,0)<0&&enqueue_calls==jobs);}
- }
- return context_result;
-}
-static int FakeBreak(int mode,void *argument){
- assert(mode==break_mode&&argument==break_argument&&current_k1==0x100000&&intr_depth==0);
- assert(ge_api_entries==1&&pending_list==context_expected_pending);context_calls++;return context_result;
-}
 static void Reset(void){
- native_keep_edram=native_edram_held=native_keep_memory=select_down=0;
- test_profile=1;idle_skips=ge_api_entries=circle_down=0;notice_label=NULL;
- memset(ge_api_calls,0,sizeof(ge_api_calls));memset(ge_api_logged,0,sizeof(ge_api_logged));
- ge_worker_step=inject_ge_entry=context_calls=0;real_ge_save=real_ge_restore=FakeContext;real_ge_break=FakeBreak;
+ notice_label=NULL;
  probe_native_reference=0;freeze_geometry=lcd_force_scaled=0;desired_width=hardware_width=480;hardware_stride=512;hardware_format=3;
  probe_ge=FakeProbeGe;probe_cmd=NULL;probe_dma=FakeProbeDma;probe_active_pending=probe_manual_started=probe_bound_taken=probe_ui_pending=probe_ui_seen=0;probe_word_reads=0;
  assert(intr_depth==0);slot_driver=hold_vblank=native_mode_with_old_layer=inject_native_frames=immediate_rejections=0;native_wait_reason=NULL;
  manual_native=manual_native_ready=square_down=dep_only_fail=0;
- memset(async_writes,0,sizeof(async_writes));async_overflow=write_calls=0;
- file_hooks[0].original=file_hooks[1].original=(uintptr_t)FakeWrite;
- for(int i=2;i<=4;i++)file_hooks[i].original=(uintptr_t)FakeAsync;
- file_hooks[5].original=(uintptr_t)FakeAsyncStat;file_hooks[6].original=(uintptr_t)FakeClose;
- save_gate=save_entries=save_quiet_until=save_worker_step=save_calls=current_k1=0;real_savedata_init=FakeSavedataInit;
+ current_k1=0;
  pending_list=-1;assert(FreeDepMemory()==0);assert(FreeGeMemory()==0);alloc_fail=bad_head=0;
  running=1;active=reserved=abort_requested=home_paused=home_scaled_ready=reboot_exit=reboot_late=reboot_joined=worker_done=home_output_restored=auto_fault=auto_ready_wait=0;
  pending_list=-1;next_auto=auto_ready_since=clock_us=menu_bits=0;aspect=output_index=0;
@@ -144,75 +101,6 @@ static void Reset(void){
  assert(!((uintptr_t)packet&63)&&!((uintptr_t)ge_context&63));
 }
 int main(void){
- Reset();AutoControl(0,0);assert(InitDepMemory()==0);
- SceUID held_gpu=gpu_memory,held_dep=dep_memory;
- unsigned retained_free=sceKernelPartitionTotalFreeMemSize(2);int held_jobs=enqueue_calls;
- unsigned memory_chord=PSP_CTRL_LTRIGGER|PSP_CTRL_RTRIGGER|PSP_CTRL_SELECT;
- pad_buttons=memory_chord;PollFilter(0,0);assert(manual_native&&native_keep_memory);
- AutoControl(0,0);assert(manual_native_ready&&!reserved&&!active&&edram==0x400000&&native_edram_held);
- assert(GetSizeHook()==0x200000&&gpu_memory==held_gpu&&dep_memory==held_dep&&enqueue_calls==held_jobs);
- pad_buttons=0;PollFilter(0,0);pad_buttons=memory_chord;PollFilter(0,0);
- AutoControl(0,0);assert(manual_native_ready&&!reserved&&!active&&edram==0x200000&&!native_edram_held);
- assert(gpu_memory==held_gpu&&dep_memory==held_dep&&enqueue_calls==held_jobs);
- assert(sceKernelPartitionTotalFreeMemSize(2)==retained_free&&NativeHardwareReady());
- pad_buttons=0;PollFilter(0,0);pad_buttons=memory_chord;PollFilter(0,0);
- assert(manual_native&&!native_keep_memory&&!manual_native_ready);
- AutoControl(0,0);assert(manual_native_ready&&gpu_memory<0&&dep_memory<0&&edram==0x200000);
- assert(sceKernelPartitionTotalFreeMemSize(2)>retained_free&&enqueue_calls==held_jobs&&NativeHardwareReady());
- pad_buttons=0;PollFilter(0,0);pad_buttons=PSP_CTRL_LTRIGGER|PSP_CTRL_RTRIGGER|PSP_CTRL_SQUARE;PollFilter(0,0);
- assert(!manual_native);AutoControl(0,clock_us);assert(active&&reserved&&gpu_memory>=0);
-
- // Direct resume and reboot must release held 4 MiB state safely.
- Reset();AutoControl(0,0);pad_buttons=memory_chord;PollFilter(0,0);AutoControl(0,0);
- assert(native_edram_held&&edram==0x400000);
- pad_buttons=0;PollFilter(0,0);pad_buttons=PSP_CTRL_LTRIGGER|PSP_CTRL_RTRIGGER|PSP_CTRL_SQUARE;PollFilter(0,0);
- AutoControl(0,clock_us);assert(active&&reserved&&!native_edram_held&&edram==0x400000);
- Reset();AutoControl(0,0);pad_buttons=memory_chord;PollFilter(0,0);AutoControl(0,0);
- assert(native_edram_held);reboot_exit=1;running=0;CleanupBeforeReboot();
- assert(!native_edram_held&&!reserved&&edram==0x200000&&worker_done);
- // R19: user context operations drain only our list, suppress new submissions,
- // preserve pointers/K1/results, and leave native/load handling untouched.
- Reset();AutoControl(0,0);context_parameter=(PspGeContext *)0x12345678;
- current_k1=0x100000;context_expected_pending=-1;context_result=-42;
- assert(GeSaveHook(context_parameter)==-42&&context_calls==1&&!ge_api_entries&&current_k1==0x100000);
- assert(active&&reserved&&edram==0x400000);
- pending_list=7;ge_worker_step=1;context_result=0;
- assert(GeRestoreHook(context_parameter)==0&&context_calls==2&&pending_list<0&&!ge_api_entries&&clock_us>0);
- // A paused list cannot be cancelled or reused, even after the bounded wait.
- pending_list=7;sync_paused=1;ge_worker_step=0;context_expected_pending=7;context_result=-3;
- unsigned began=clock_us;ScalePacket ge_held=*packet;PspGeContext ctx_held=*ge_context;
- assert(GeSaveHook(context_parameter)==-3&&clock_us-began==100000&&pending_list==7);
- assert(!memcmp(packet,&ge_held,sizeof(ge_held))&&!memcmp(ge_context,&ctx_held,sizeof(ctx_held))&&!ge_api_entries);
- // Break runs immediately with all arguments unchanged; never wait for it to
- // unpause the very queue we're trying to drain.
- break_mode=0;break_argument=(void *)0x87654321;began=clock_us;
- assert(GeBreakHook(break_mode,break_argument)==-3&&clock_us==began&&pending_list==7);
- break_mode=1;assert(GeBreakHook(break_mode,break_argument)==-3&&clock_us==began);
- // Baseline and idle-only profiles add no context-drain delay.
- test_profile=0;assert(GeSaveHook(context_parameter)==-3&&clock_us==began);
- test_profile=2;assert(GeRestoreHook(context_parameter)==-3&&clock_us==began);
- // Calls bypass the guard completely when the scaler has no reservation.
- pending_list=-1;reserved=0;context_expected_pending=-1;
- assert(GeSaveHook(context_parameter)==-3&&clock_us==began&&current_k1==0x100000);
- // Idle-only profiles skip scaler jobs while the game's queue is busy,
- // without faulting or changing the currently displayed output.
- Reset();AutoControl(0,0);int prior_jobs=enqueue_calls;test_profile=2;ge_busy=1;
- void *prior_output=ready_buffer;
- assert(Render(game_frame,1)==-2&&enqueue_calls==prior_jobs&&idle_skips==1&&active&&ready_buffer==prior_output&&!auto_fault);
- ge_busy=0;assert(Render(game_frame,1)==0&&enqueue_calls==prior_jobs+1);
- test_profile=3;ge_busy=1;assert(Render(game_frame,1)==-2&&idle_skips==2);
- // The final atomic gate also catches an entry after the early check/packet build.
- Reset();AutoControl(0,0);prior_jobs=enqueue_calls;inject_ge_entry=1;
- assert(Render(game_frame,1)==-2&&enqueue_calls==prior_jobs&&ge_api_entries==1);ge_api_entries=0;
- // One Circle tap selects one profile; menu presses consume the edge.
- Reset();unsigned test_chord=PSP_CTRL_LTRIGGER|PSP_CTRL_RTRIGGER|PSP_CTRL_CIRCLE;
- for(unsigned expected=2;expected<=5;expected++){
-  pad_buttons=0;PollFilter(0,clock_us);pad_buttons=test_chord;PollFilter(0,clock_us);
-  assert(test_profile==(expected&3u)&&notice_label==TestProfileName(test_profile));
-  PollFilter(0,clock_us);assert(test_profile==(expected&3u));
- }
- pad_buttons=0;PollFilter(0,clock_us);pad_buttons=test_chord;PollFilter(1,clock_us);PollFilter(0,clock_us);assert(test_profile==1);
-
  Reset();AutoControl(0,0); // First ready sample activates immediately.
  assert(active&&reserved&&draws==1&&mode_v==0xd2&&w_v==720&&h_v==480&&display_frame.address==0x04200000);
  // NODS consumes Sony PS. Native HOME status alone stops substitution.
@@ -417,64 +305,6 @@ int main(void){
  assert(enqueue_calls==probe_jobs&&mode_calls==probe_modes&&ge_allocations==probe_allocs);
  probe_word_reads=0;PollScanoutProbe(clock_us);assert(probe_word_reads==0);
  clock_us+=33334;PollScanoutProbe(clock_us);assert(probe_word_reads==5&&!probe_active_pending);
- // Custom autosaves using direct synchronous writes have no utility status.
- Reset();AutoControl(0,0);current_k1=0x100000;save_worker_step=1;
- write_fd=5;write_data=(const void *)0x12345678;write_size=4096;write_result=2048;
- assert(FileWriteHook(5,write_data,4096)==2048&&write_calls==1&&current_k1==0x100000);
- assert(save_gate&&!active&&utility_native_ready&&home_output_restored&&!FirmwareUtilityVisible());
- UpdateSaveGate(clock_us+300000);AutoControl(MenuVisible(),clock_us+600000);assert(active);
- // Failed writes retain the original error, pointer and count; no buffer read.
- write_result=-9;assert(FileWriteHook(5,write_data,4096)==-9&&write_calls==2);
- // Async submissions keep native output until observed completion, not a timer.
- Reset();AutoControl(0,0);current_k1=0x100000;save_worker_step=1;write_result=0;
- assert(FileWriteAsyncHook(5,write_data,4096)==0&&HasPendingWrites());
- UpdateSaveGate(clock_us+2000000);assert(save_gate&&module_stop(0,NULL)<0);
- write_result=-5;assert(FileWriteAsyncHook(5,write_data,4096)==-5&&HasPendingWrites());write_result=0;
- int64_t io_result=12345;async_result_pointer=&io_result;async_result_code=1;
- assert(FilePollHook(5,&io_result)==1&&HasPendingWrites()&&io_result==12345);
- async_result_code=0;assert(FileWaitCBHook(5,&io_result)==0&&!HasPendingWrites()&&current_k1==0x100000);
- UpdateSaveGate(clock_us+299999);assert(save_gate);UpdateSaveGate(clock_us+300000);assert(!save_gate);
- AutoControl(MenuVisible(),clock_us+600000);assert(active);
- // Async failure clears only its tracking; successful stat/wait/close also
- // release tracking, without changing results or caller-owned output storage.
- write_result=-7;assert(FileWriteAsyncHook(5,write_data,4096)==-7&&!HasPendingWrites());
- write_result=0;assert(FileWriteAsyncHook(5,write_data,4096)==0);
- assert(FileStatHook(5,1,&io_result)==0&&!HasPendingWrites()&&io_result==12345);
- assert(FileWriteAsyncHook(5,write_data,4096)==0);assert(FileWaitHook(5,&io_result)==0&&!HasPendingWrites());
- assert(FileWriteAsyncHook(5,write_data,4096)==0);close_result=-4;
- assert(FileCloseHook(5)==-4&&HasPendingWrites());close_result=0;
- assert(FileCloseHook(5)==0&&!HasPendingWrites());
- // Standard output and zero-length writes bypass the save handoff.
- Reset();AutoControl(0,0);current_k1=0x100000;write_fd=1;write_result=10;
- assert(FileWriteHook(1,write_data,4096)==10&&!save_gate&&active);
- write_fd=5;write_size=0;assert(FileWriteHook(5,write_data,0)==10&&!save_gate);write_size=4096;
- // Silent savedata entry: pause BEFORE the original API sets utility state.
- Reset();AutoControl(0,0);int save_jobs=enqueue_calls;save_parameter=(void *)0x12345678;
- current_k1=0x100000;save_worker_step=1;save_result=0;save_expected_gate=save_expected_ready=1;save_returns_status=1;
- assert(SavedataInitHook(save_parameter)==0&&save_calls==1&&current_k1==0x100000);
- assert(enqueue_calls==save_jobs&&!active&&save_gate&&home_paused&&save_entries==0);
- assert(reserved&&gpu_memory>=0&&packet&&edram==0x400000);
- UpdateSaveGate(clock_us+299999);assert(save_gate);
- UpdateSaveGate(clock_us+300000);assert(!save_gate&&UtilityVisible());
- utility_state=4;layer_frame=(Frame){0,512,3,0};AutoControl(MenuVisible(),clock_us+600000);
- assert(active&&!auto_fault);
- // Failed init preserves result and input identity; quiet gate expires even
- // when no utility status ever becomes visible (including very short saves).
- Reset();AutoControl(0,0);current_k1=0x100000;save_worker_step=1;save_result=-123;save_returns_status=0;
- assert(SavedataInitHook(save_parameter)==-123&&save_calls==1&&current_k1==0x100000);
- UpdateSaveGate(clock_us+300000);assert(!UtilityVisible());
- AutoControl(0,clock_us+600000);assert(active&&!auto_fault);
- // Busy handoff is bounded; still call the original once without changing
- // its result or freeing/reusing an in-flight packet.
- Reset();AutoControl(0,0);pending_list=7;current_k1=0x100000;save_worker_step=1;
- save_expected_ready=0;save_result=7;save_returns_status=0;unsigned before=clock_us;
- ScalePacket before_save=*packet;
- assert(SavedataInitHook(save_parameter)==7&&save_calls==1&&clock_us-before==250000);
- assert(pending_list==7&&FreeGeMemory()<0&&!memcmp(packet,&before_save,sizeof(*packet)));
- assert(save_gate&&!auto_fault&&current_k1==0x100000);pending_list=-1;
- // No scaling reservation: preserve the API with no handshake/delay.
- Reset();current_k1=0x100000;save_expected_gate=0;save_expected_ready=0;save_result=42;
- assert(SavedataInitHook(save_parameter)==42&&save_calls==1&&!save_gate&&clock_us==0);
  // Firmware state 4 is resumable PAUSED, not proof of completion.
  Reset();AutoControl(0,0);sync_paused=1;unsigned completed=draws;
  assert(Render(game_frame,1)==-2&&pending_list==7&&draws==completed);
@@ -518,14 +348,14 @@ int main(void){
  Reset();input_fixture=1;ResolveInput();assert((uintptr_t)merged_peek==0x88002000u);
  input_owner.attribute=0;ResolveInput();assert(!merged_peek);input_owner.attribute=0x1000;
  input_fixture=0;ResolveInput();assert(!merged_peek);
- merged_peek=MergedPad;pad_buttons=0;PollFilter(0,1);assert(filter_mode==FILTER_BLUR);merged_peek=NULL;
+ merged_peek=MergedPad;pad_buttons=0;PollFilter(0,1);assert(filter_mode==FILTER_SOFTER);merged_peek=NULL;
  // Cycle once per Triangle press; HOME consumes the edge without changing.
  Reset();unsigned chord=PSP_CTRL_LTRIGGER|PSP_CTRL_RTRIGGER|PSP_CTRL_TRIANGLE;
- pad_buttons=chord;PollFilter(0,100);assert(filter_mode==FILTER_BLUR);
- PollFilter(0,101);assert(filter_mode==FILTER_BLUR);
- pad_buttons=0;PollFilter(0,102);pad_buttons=chord;PollFilter(1,103);assert(filter_mode==FILTER_BLUR);
- PollFilter(0,104);assert(filter_mode==FILTER_BLUR);
- for(int next=FILTER_CRT;next<FILTER_COUNT;next++){
+ pad_buttons=chord;PollFilter(0,100);assert(filter_mode==FILTER_SOFTER);
+ PollFilter(0,101);assert(filter_mode==FILTER_SOFTER);
+ pad_buttons=0;PollFilter(0,102);pad_buttons=chord;PollFilter(1,103);assert(filter_mode==FILTER_SOFTER);
+ PollFilter(0,104);assert(filter_mode==FILTER_SOFTER);
+ for(int next=FILTER_BLUR;next<FILTER_COUNT;next++){
   pad_buttons=0;PollFilter(0,105);pad_buttons=chord;PollFilter(0,106);assert(filter_mode==next);
  }
  assert(dep_memory>=0&&dep_pixels);
@@ -545,7 +375,7 @@ int main(void){
  filter_mode=FILTER_DITHER;pad_buttons=0;PollFilter(0,109);alloc_fail=1;
  pad_buttons=chord;PollFilter(0,110);assert(filter_mode==FILTER_SHARP&&dep_memory<0);alloc_fail=0;
  assert(FreeGeMemory()==0);
- puts("R20 queued logging plus R19 selectable profiles/context guard/atomic enqueue plus R18 mode-before-layout/scanout-probe/manual-handoff/load-rollback/direct-write/savedata-entry/paused-GE/utility dialog/HOME and GE user-memory checks passed: immediate default-on, TV/source gating, busy retry, fault latch, NODS native status, NULL/kernel output restoration, native menu RGBA5551 GPU scaling, reboot quiesce/scanout cleanup, preserved HOME canvas/stride/format, no HOME resize, automatic resume and in-flight HOME suppression.");
+ puts("Simple R23 automatic startup/filter cycle/native toggle/utility dialog/HOME/paused-GE and GE user-memory checks passed: immediate default-on, TV/source gating, busy retry, fault latch, NODS native status, NULL/kernel output restoration, native menu RGBA5551 GPU scaling, reboot quiesce/scanout cleanup, preserved HOME canvas/stride/format, no HOME resize, automatic resume and in-flight HOME suppression.");
 }
 unsigned TestRead(unsigned off){return off==0?3:off==0x1c?(lcd_force_scaled?2160:slot_driver?(hardware_width==720?2160:2040):(mode_v==0xd2?2160:2040)):off==0x2c?480:0;}
 int sceKernelIsIntrContext(void){return 0;}
@@ -554,14 +384,14 @@ SceUID sceKernelGetThreadId(void){return 1;}
 int sceKernelCpuSuspendIntr(void){int old=intr_depth;intr_depth++;return old;}void sceKernelCpuResumeIntr(int n){assert(n<intr_depth);intr_depth=n;}
 SceModule *sceKernelFindModuleByName(const char *n){if(input_fixture>=2&&!strcmp(n,"sceUtility_Driver"))return &utility_module;return input_fixture==1&&!strcmp(n,"sceImpose_Driver")?&input_module:NULL;}
 void sceKernelDcacheWritebackInvalidateAll(void){}void sceKernelIcacheInvalidateAll(void){}
-void sceKernelDcacheWritebackRange(const void *p,unsigned n){(void)p;(void)n;if(inject_ge_entry){inject_ge_entry=0;ge_api_entries=1;}}
+void sceKernelDcacheWritebackRange(const void *p,unsigned n){(void)p;(void)n;}
 void sceKernelDcacheWritebackInvalidateRange(const void *p,unsigned n){assert(p&&n);}
 unsigned pspSdkSetK1(unsigned n){unsigned old=current_k1;current_k1=n;return old;}
 unsigned sceKernelGetSystemTimeLow(void){return clock_us;}
 int sceKernelDelayThread(unsigned n){assert(intr_depth==0);unsigned previous=clock_us/16667u;clock_us+=n;
- if(ge_worker_step&&ge_api_entries&&pending_list>=0){assert(Render(game_frame,0)<0);assert(WaitList(1000)==0);}
  if(slot_driver&&!hold_vblank&&clock_us/16667u!=previous){for(int i=0;i<4;i++)slots[i][0]=slots[i][1];FakeLayoutTick();}
- static int stepping;if(!stepping&&save_worker_step&&save_gate&&pending_list<0){stepping=1;AutoControl(MenuVisible(),clock_us);stepping=0;}return 0;}
+ return 0;}
+
 int sceGeListSync(int a,int b){(void)a;(void)b;if(open_during_render){menu_bits=0x100;open_during_render=0;}if(utility_during_render){utility_kind=1;utility_state=1;sync_invalid=1;utility_during_render=0;}
  return sync_paused?4:sync_invalid?(int)0x80000100u:PSP_GE_LIST_DONE;}
 int sceGeListDeQueue(int n){(void)n;return 0;}
@@ -628,6 +458,3 @@ unsigned TestHardwareWord(unsigned address){
  if(address==0xbc80010cu)return slot_driver?(unsigned)hardware_stride:(unsigned)f.stride;
  return 3;
 }
-
-SceSize sceKernelPartitionTotalFreeMemSize(int partition){assert(partition==2);return 0x1000000u-(gpu_memory>=0?user_block_bytes:0u)-(dep_memory>=0?dep_block_bytes:0u);}
-SceSize sceKernelPartitionMaxFreeMemSize(int partition){return sceKernelPartitionTotalFreeMemSize(partition);}

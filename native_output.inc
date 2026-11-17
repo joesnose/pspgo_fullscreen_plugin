@@ -66,13 +66,6 @@ static int NativeHardwareReady(void){
  }
  sceKernelCpuResumeIntr(intr);return ready;
 }
-/* Shrink only after the existing native geometry and GE-idle fences. */
-static int ReleaseNativeEdram(void){
- if(!native_edram_held)return 0;
- int intr=sceKernelCpuSuspendIntr(),ret=1;
- if(NativeLayersDetached()&&NativeHardwareReady()&&sceGeDrawSync(1)==PSP_GE_LIST_DONE&&set_size(0x200000)>=0&&get_size()==0x200000){native_edram_held=0;ret=0;}
- sceKernelCpuResumeIntr(intr);return ret;
-}
 static int RestoreManualNativeOutput(void){
  if(!manual_native)return -1; // never used for automatic save/load or HOME
  if(!probe_manual_started){ProbeScanout("manual_before");probe_manual_started=1;}
@@ -124,22 +117,18 @@ static int RestoreManualNativeOutput(void){
   // Verify references and idle state atomically with restoring the 2 MiB bank.
   intr=sceKernelCpuSuspendIntr();ret=1;
   if(NativeLayersDetached()&&NativeHardwareReady()&&sceGeDrawSync(1)==PSP_GE_LIST_DONE){
-   if(native_keep_edram){native_edram_held=1;reserved=0;ready_buffer=NULL;ret=0;}
-   else {ret=set_size(0x200000);
-    if(ret>=0&&get_size()==0x200000){reserved=0;ready_buffer=NULL;ret=0;}else ret=1;}
-
+   ret=set_size(0x200000);
+   if(ret>=0&&get_size()==0x200000){reserved=0;ready_buffer=NULL;ret=0;}else ret=1;
   }
   sceKernelCpuResumeIntr(intr);
   if(ret)return NativeWait("scanout_or_ge_busy");
   logline("native_output_bound,current,0x%08X,stride,%d,format,%d,next,0x%08X,next_stride,%d,next_format,%d,mode,0x%X\n",current.address,current.stride,current.format,next.address,next.stride,next.format,(unsigned)mode);
  }
  if(reboot_exit||reboot_late)return -1;
- if(!native_keep_edram&&ReleaseNativeEdram()!=0)return NativeWait("edram_release");
  // No current/queued scanout or GE list references the scaler's old memory.
- if(!native_keep_memory&&(FreeDepMemory()<0||FreeGeMemory()<0))return NativeWait("workspace_release");
+ if(FreeDepMemory()<0||FreeGeMemory()<0)return NativeWait("workspace_release");
  home_output_restored=1;utility_native_ready=1;native_wait_reason=NULL;
- ProbeScanout(native_keep_memory?"manual_retained":"manual_after_release");
- LogMemory(native_edram_held?"native_retained_4m":native_keep_memory?"native_retained_2m":"native_freed");
+ ProbeScanout("manual_after_release");
  logline("native_handoff_complete,edram,%d,reserved,%u,gpu_memory,%d,dep_memory,%d\n",get_size(),reserved,gpu_memory,dep_memory);
  return 0;
 }
