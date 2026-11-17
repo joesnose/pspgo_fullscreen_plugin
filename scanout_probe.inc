@@ -3,11 +3,15 @@
 typedef int (*ProbeGeFn)(int);
 typedef int (*ProbeDmaFn)(int *,int *,int *);
 static ProbeGeFn probe_ge,probe_cmd;
+static int probe_native_reference;
+static unsigned probe_native_lcd_x,probe_native_lcd_y,probe_native_dma_format;
+static int probe_native_mode;
 static ProbeDmaFn probe_dma;
 static int probe_active_pending,probe_manual_started,probe_bound_taken;
 static unsigned probe_active_vcount;
 static int probe_ui_pending,probe_ui_seen;
 static unsigned probe_ui_at;
+static void ArmManualProbe(void){probe_manual_started=probe_bound_taken=0;}
 static unsigned ProbeWord(unsigned address){
 #ifdef HOST_TEST
  return TestHardwareWord(address);
@@ -37,6 +41,9 @@ static void ProbeScanout(const char *point){
   void *address=NULL;int stride=0,format=-1;
   get_frame(layer,&address,&stride,&format,sync);
   frames[layer][sync]=(Frame){(uintptr_t)address,stride,format,0};
+ }
+ if(!probe_native_reference&&!strcmp(point,"cold_native")&&w==480&&h==272&&dma[2]==480u){
+  probe_native_reference=1;probe_native_lcd_x=lcd[1];probe_native_lcd_y=lcd[2];probe_native_dma_format=dma[1];probe_native_mode=mode;
  }
  sceKernelCpuResumeIntr(intr);
  logline("scanout_probe,point,%s,ms,%u,mode,0x%X,width,%d,height,%d,software_size,%d,ge_enabled,%d,ge_trans_disabled,%d,ge_trans_value,%d\n",point,sceKernelGetSystemTimeLow()/1000,(unsigned)mode,w,h,software,ge[0],ge[1],ge[2]);

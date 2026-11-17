@@ -1,12 +1,11 @@
 {
-  "name": "PSP Go Fullscreen Plugin diagnostic",
-  "revision": 17,
-  "baseline": "R16: native teardown completes but picture quarters and manual reactivation crashes",
-  "change": "Read-only scanout/GE/DMA baseline and working-utility versus manual-native snapshots; block manual reactivation in diagnostic build",
+  "name": "PSP Go Fullscreen Plugin",
+  "revision": 18,
+  "baseline": "R17 diagnostic",
+  "change": "Request native geometry before source-layout transition; verify actual DMA and LCDC geometry before manual release/reactivation",
   "psp_build": "passed -Wall -Wextra -Werror",
   "hardware_tested": false,
-  "evidence": "R16 log shows native_handoff_complete edram2097152 reserved0 gpu_memory-1 dep_memory-1, then save runs and last line is fresh GPU memory allocation on attempted resume. Native software tuple512/format3 is insufficient to explain quartered image.",
-  "host_tests": "ASan/UBSan actual-source regressions pass: five raw-register whitelist, IRQ-protected snapshot reads, no mode/alloc/GE effects, settled capture after2VB, blocked hotkey reactivation and prior native/load/write/input tests",
-  "diagnostic_limitation": "Manual Square resume is intentionally blocked after turning scaling off; restart game for fullscreen. Original crash unresolved.",
-  "remaining": "Short device run: working load screen then one native toggle, collect hardware snapshots; no level replay required"
+  "evidence": "R17 log: software native480x272 while DMA width720/stride512 and LCDC x2160 persist; cold native DMA480/512 and LCDC x2040",
+  "host_tests": "ASan/UBSan actual-source regressions pass, including old-order mismatch reproducer, corrected ordering, stale-width and LCDC refusal, and prior load/HOME/GE/write/input checks",
+  "remaining": "Device off/on toggle and load-screen test; original automatic save-time crash remains unconfirmed"
 }

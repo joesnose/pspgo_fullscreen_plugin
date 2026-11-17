@@ -1,81 +1,64 @@
-# PSP Go Fullscreen Plugin — R17 diagnostic
+# PSP Go Fullscreen Plugin — R18 test build
 
-[Download R17 diagnostic build and source](pspgo-tv-scale-v1-auto-home-r17.zip) · [Plugin PRX](PSPGoTVScale.prx)
+[Download R18 test build and source](pspgo-tv-scale-v1-auto-home-r18.zip) · [Plugin PRX](PSPGoTVScale.prx)
 
-Immediate fullscreen TV scaling for PSP Go, with a short read-only hardware
-comparison for the Burnout Legends native-output problem.
+Immediate fullscreen TV scaling for PSP Go. Soft is the default; opicker is not required.
 
-**Diagnostic behavior: after L+R+Square switches scaling off, this build does not
-switch it back on. A second press captures the state and stays native, avoiding
-the currently crashing reactivation. Restart the game to restore fullscreen.**
+## R18 change
 
-## What the R16 log established
+The R17 device log reports native 480×272 mode, but actual display DMA remains
+720 pixels wide with a 512-pixel stride. The cold native baseline uses width
+480 and stride 512. This mismatch can explain the duplicated/quartered picture.
 
-The native handoff completed: software EDRAM returned to 2 MiB, GPU/deposterise
-buffers were freed, scaler draws stopped, and the reported framebuffer was
-stride512/format3 in native TV mode. The user still saw four quarters and a crash
-on reactivation. That rules out the earlier rejected-call explanation for this
-run; it does not establish the remaining hardware/display-state cause.
+Native and fullscreen TV use the same physical display mode. R18 requests native
+geometry before detaching the scaled framebuffer, so the subsequent framebuffer
+format/stride transition programs the requested native width. Previously that
+transition happened while the requested width was still 720.
 
-The existing working load-screen path remains the baseline. The utility also
-initializes its own graphics/display setup; the manual toggle lacks that setup.
-R17 records both states for comparison, without guessing more register writes.
-This is an evidence-gathering build, not a claimed fix.
+Manual reactivation is restored, with a hardware check: actual DMA width, stride,
+pixel format and framebuffer address must match native output before memory is
+released or scaling can restart. Cached DMA settings and the cold native LCDC
+baseline are checked when available. If these checks fail, the plugin stays in
+native handoff and records the mismatch. Hardware observations are read only;
+this revision adds no guessed register writes.
 
-## Short test
+The R13 automatic save/load control flow remains the baseline. HOME/NODS support,
+reboot cleanup and all ten filters are retained. The original end-of-level save
+crash is not yet confirmed fixed on hardware.
 
-1. Fully power off, replace ef0:/SEPLUGINS/PSPGoTVScale.prx and restart.
-2. Open the normal load screen, leave it visible for a second, then load normally.
-3. In gameplay, hold L+R and tap Square once. Note the picture and wait two seconds.
-4. Stop the test and copy ef0:/PSPGoTVScale.txt before starting another game.
-   You do not need to replay the level ending or try re-enabling scaling.
+## Install and short test
 
-Default NODS mapping is L1+R1+Square. The existing GAME entry is unchanged:
+1. Fully restart the PSP after replacing ef0:/SEPLUGINS/PSPGoTVScale.prx.
+2. Confirm the normal load screen still works.
+3. During gameplay hold L+R and tap Square to switch to native output. Wait two
+   seconds, then repeat to restore fullscreen. Check whether duplication is gone.
+4. Copy ef0:/PSPGoTVScale.txt before starting another game and report the result.
+
+Default NODS mapping is L1+R1+Square. Existing GAME entry:
 
     game, ef0:/SEPLUGINS/PSPGoTVScale.prx, on
 
-Soft fullscreen remains the startup default. L+R+Triangle still cycles all ten
-filters: Sharp, Soft, Blur, CRT, Soft CRT, RGB Mask, Sharpen, Posterise, Dither,
-Deposterise. INI files remain ignored. opicker is not required.
+L+R+Triangle cycles Sharp, Soft, Blur, CRT, Soft CRT, RGB Mask, Sharpen,
+Posterise, Dither and Deposterise. INI files remain ignored.
 
-## Captures
+## Diagnostics and validation
 
-Snapshots compare:
+Read-only snapshots include cold_native, scaled_settled, utility_pause,
+utility_visible, manual_before, manual_bound_before_release and
+manual_after_release. Failed native checks record native_hardware_mismatch or
+resume_not_ready. Logs fall back to ms0:/PSPGoTVScale.txt.
 
-- cold_native, before the first scaler activation;
-- scaled_settled, at least two vblanks after scaled output is published;
-- utility_pause and utility_visible, before initialization and after the working
-  savedata/load UI has been visible for 100 ms;
-- manual_before, manual_bound_before_release and manual_after_release;
-- resume_request_blocked if the Square chord is pressed again.
-
-Records include actual display-DMA base/format/width/stride/control registers,
-the driver's cached DMA format, GE enabled-size/address translation, GE framebuffer
-command words, LCDC timing and all four current/pending display-layer tuples.
-DMA hardware pixel-format codes differ from PSP framebuffer format numbers;
-compare them to the working native baseline instead of equating the numbers.
-
-The five raw DMA words are exactly 0xBC800100..0xBC800110, identified from this
-Go firmware's own setters. They are read only while TV output is active. GE and
-cached-DMA getters are export-resolved and optional. No new hardware settings
-are written, no queues are reset, and snapshots submit no GPU jobs. Reads are
-collected under a short interrupt guard; file logging happens after it is released.
-The R13 automatic save/load flow and R16 manual handoff otherwise remain.
-
-Look for scanout_probe, scanout_dma, scanout_ge_framebuffer, scanout_lcdc and
-scanout_layer. File fallback is ms0:/PSPGoTVScale.txt. Ordinary HOME/reboot handling,
-NODS integration and original save/write arguments/results remain in place.
-The original automatic save-time crash remains unresolved.
-
-## Build and validation
+The five DMA register reads are 0xBC800100..0xBC800110, identified from the Go
+firmware setters. Reads are guarded by disabled interrupts; logging happens
+outside that guard. Firmware reference binaries are not distributed.
 
     docker run --rm -v "$PWD":/src -w /src pspdev/pspdev:latest make -j4
 
     cc -DHOST_TEST -D_GNU_SOURCE -O1 -g -std=c11 -Wall -Wextra -Werror -Wno-pointer-to-int-cast -Wno-int-to-pointer-cast -fsanitize=address,undefined auto_home_test.c render.c effects.c -o /tmp/go-tv-auto-test
     /tmp/go-tv-auto-test
 
-Strict PSP build and ASan/UBSan host checks pass. Tests enforce the five-register
-read whitelist and interrupt guard, no snapshot allocations/mode changes/GE
-submissions, two-vblank settled capture and blocked manual reactivation, plus
-prior load, native-handoff, memory and input regressions. Host checks do not
-execute physical GPU/display hardware; R17 needs the short real-device test above.
+PSP compilation and ASan/UBSan host regressions pass. The host model reproduces
+the old ordering's software-480/hardware-720 mismatch, verifies the new ordering,
+and refuses release/reactivation with stale DMA width or LCDC geometry. Previous
+load, HOME, paused GE, write-guard, memory and input regressions also pass.
+Host checks do not execute PSP hardware; this remains a device test build.

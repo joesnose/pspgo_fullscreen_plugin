@@ -18,7 +18,7 @@
 #include <stddef.h>
 #include "render.h"
 #include "effects.h"
-PSP_MODULE_INFO("PSPGoTVScaleV1Auto",0x1000,1,17);
+PSP_MODULE_INFO("PSPGoTVScaleV1Auto",0x1000,1,18);
 extern void sctrlHENPatchSyscall(void *,void *);
 static const char *logpath;
 #include "logger.inc"
@@ -139,6 +139,8 @@ static void ResolveInput(void) {
   merged_peek=(PadFn)(uintptr_t)target;
 }
 static void ProbeScanout(const char *);
+static int NativeHardwareReady(void);
+static void ArmManualProbe(void);
 static void PollFilter(int menu,unsigned now) {
   SceCtrlData pad;memset(&pad,0,sizeof(pad));
   int ret=merged_peek?merged_peek(&pad,1):sceCtrlPeekBufferPositive(&pad,1);
@@ -147,12 +149,13 @@ static void PollFilter(int menu,unsigned now) {
   int square=(pad.Buttons&PSP_CTRL_SQUARE)!=0;
   unsigned chord=PSP_CTRL_LTRIGGER|PSP_CTRL_RTRIGGER;
   if(!menu&&!reboot_exit&&pending_list<0&&square&&!square_down&&(pad.Buttons&chord)==chord){
-    if(manual_native){
-      ProbeScanout("resume_request_blocked");
-      logline("probe_resume_blocked,native_retained,1\n");
+    if(manual_native&&(!manual_native_ready||!NativeHardwareReady())){
+      ProbeScanout("resume_not_ready");
+      logline("native_resume_blocked,hardware_not_ready,1\n");
     } else {
-      manual_native=1;manual_native_ready=0;next_auto=now;
-      logline("diagnostic_native_requested,1\n");
+      manual_native=!manual_native;manual_native_ready=0;next_auto=now;
+      if(manual_native)ArmManualProbe();
+      logline("diagnostic_native_requested,%u\n",manual_native);
     }
   }
   square_down=square;
@@ -694,7 +697,7 @@ static int MainThread(SceSize argc,void *argv) {
   for(unsigned i=0;i<2;++i){SceUID fd=sceIoOpen(paths[i],PSP_O_WRONLY|PSP_O_CREAT|PSP_O_TRUNC,0666);if(fd>=0){logpath=paths[i];sceIoClose(fd);break;}}
   if(!logpath)return 0;
   unsigned fw=sceKernelDevkitVersion();
-  logline("PSPGoTVScale,base,alpha1,variant,auto_home_r17,model,%d,devkit,0x%08X\n",sceKernelGetModel(),fw);
+  logline("PSPGoTVScale,base,alpha1,variant,auto_home_r18,model,%d,devkit,0x%08X\n",sceKernelGetModel(),fw);
   if(sceKernelGetModel()!=4||(fw!=0x06060010&&fw!=0x06060110)){logline("unsupported_model_or_firmware\n");return 0;}
   filter_mode=FILTER_SOFT;logline("filter,%s\n",FilterName(filter_mode));
   if(InitGeMemory()<0)return 0;

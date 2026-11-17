@@ -35,6 +35,37 @@ static int NativeLayersDetached(void){
  }
  return 1;
 }
+/* Verify the actual DMA geometry, not just sceDisplayGetMode's requested
+ * dimensions. Native and fullscreen TV share physical LCDC mode 1. */
+static int NativeHardwareReady(void){
+ if(!TvActive())return 0;
+ int intr=sceKernelCpuSuspendIntr(),ready=0;
+ Frame selected={0},pending={0};
+ for(int pri=0;pri<4;pri++){
+  void *address=NULL;int stride=0,format=-1;
+  if(get_frame(pri,&address,&stride,&format,0)<0)break;
+  if(address){
+   selected=(Frame){(uintptr_t)address,stride,format,0};
+   if(get_frame(pri,&address,&stride,&format,1)>=0)pending=(Frame){(uintptr_t)address,stride,format,0};
+   break;
+  }
+ }
+ if(selected.address&&selected.format>=0&&selected.format<4){
+  unsigned base=ProbeWord(0xbc800100u)&0x1fffffffu;
+  unsigned format=ProbeWord(0xbc800104u),width=ProbeWord(0xbc800108u),stride=ProbeWord(0xbc80010cu);
+  unsigned expected=(0x39u>>(selected.format*2))&3u;
+  ready=width==480u&&stride==(unsigned)selected.stride&&format==expected&&
+    (base==(selected.address&0x1fffffffu)||base==(pending.address&0x1fffffffu));
+  if(ready&&probe_native_reference&&format==probe_native_dma_format){
+   int mode=-1,w=0,h=0;
+   ready=get_mode(&mode,&w,&h)>=0&&mode==probe_native_mode&&w==480&&h==272&&Read(0x1c)==probe_native_lcd_x&&Read(0x2c)==probe_native_lcd_y;
+  }
+  if(ready&&probe_dma){int cw=-1,cs=-1,cf=-1;
+   ready=probe_dma(&cw,&cs,&cf)>=0&&cw==480&&cs==selected.stride&&(unsigned)cf==expected;
+  }
+ }
+ sceKernelCpuResumeIntr(intr);return ready;
+}
 static int RestoreManualNativeOutput(void){
  if(!manual_native)return -1; // never used for automatic save/load or HOME
  if(!probe_manual_started){ProbeScanout("manual_before");probe_manual_started=1;}
@@ -44,6 +75,11 @@ static int RestoreManualNativeOutput(void){
  if(reserved){
   Frame current,next;
   if(ReadNativeGameFrame(0,&current)<0||ReadNativeGameFrame(1,&next)<0)return NativeWait("native_game_buffer");
+  // Set desired geometry BEFORE the source format/stride transition. The
+  // firmware otherwise changes software dimensions without resizing mode-1
+  // DMA; the later source-layout change programs the new width into hardware.
+  int native_mode_result=real_mode(restore_mode,480,272);
+  if(native_mode_result<0)return NativeError("native_mode",native_mode_result);
   // Firmware permits immediate address changes only with the layer's
   // existing shared stride/format. Query them; do not clear using stride zero.
   void *live=NULL;int live_stride=0,live_format=-1;
@@ -55,8 +91,7 @@ static int RestoreManualNativeOutput(void){
   sceKernelCpuResumeIntr(detach_intr);
   if(detached<0)return NativeError(detach_stage,detached);
   int fence=NativeFence(1);if(fence)return fence<0?-1:NativeWait("detach_vblank");
-  if(real_mode(restore_mode,480,272)<0)return NativeWait("native_mode");
-  // Re-read after the mode change. Keep current/pending game tuples distinct;
+  // Re-read after the mode request and detach latch. Keep current/pending game tuples distinct;
   // the game can present another buffer while the worker waits for scanout.
   int intr=sceKernelCpuSuspendIntr(),ret=-1;
   if(ReadNativeGameFrame(0,&current)==0&&ReadNativeGameFrame(1,&next)==0){
@@ -75,9 +110,13 @@ static int RestoreManualNativeOutput(void){
   int mode=-1,w=0,h=0;
   if(get_mode(&mode,&w,&h)<0||mode!=restore_mode||w!=480||h!=272)return NativeWait("native_mode_verify");
   if(!probe_bound_taken){ProbeScanout("manual_bound_before_release");probe_bound_taken=1;}
+  if(!NativeHardwareReady()){
+   if((!native_wait_reason||strcmp(native_wait_reason,"native_scanout_geometry")))ProbeScanout("native_hardware_mismatch");
+   return NativeWait("native_scanout_geometry");
+  }
   // Verify references and idle state atomically with restoring the 2 MiB bank.
   intr=sceKernelCpuSuspendIntr();ret=1;
-  if(NativeLayersDetached()&&sceGeDrawSync(1)==PSP_GE_LIST_DONE){
+  if(NativeLayersDetached()&&NativeHardwareReady()&&sceGeDrawSync(1)==PSP_GE_LIST_DONE){
    ret=set_size(0x200000);
    if(ret>=0&&get_size()==0x200000){reserved=0;ready_buffer=NULL;ret=0;}else ret=1;
   }

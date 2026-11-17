@@ -21,18 +21,35 @@ static SceModule utility_module={.ent_top=&utility_entry,.ent_size=sizeof(utilit
 static int MergedPad(SceCtrlData *pad,int n){(void)n;pad->Buttons=PSP_CTRL_LTRIGGER|PSP_CTRL_RTRIGGER|PSP_CTRL_TRIANGLE;return 1;}
 static void *dep_block;static unsigned dep_block_bytes;
 static int mode_v,w_v,h_v,edram,ge_busy,resize_calls,enqueue_calls,fail_enqueue,open_during_render;
+static int desired_width=480,hardware_width=480,hardware_stride=512,hardware_format=3,freeze_geometry,lcd_force_scaled;
 static int frame_calls,mode_calls,sync_invalid,utility_during_render,sync_paused;
 static Frame game_frame,layer_frame,display_frame;
 static int slot_driver,hold_vblank,native_mode_with_old_layer,inject_native_frames,intr_depth,immediate_rejections;
 static Frame slots[4][2],native_rebound[2];
 static unsigned ge_allocations,ge_releases,probe_word_reads;
 static int FakeProbeGe(int id){return id==19?(edram==0x400000?2:4):id==28?1:0;}
-static int FakeProbeDma(int *w,int *stride,int *fmt){*w=mode_v==0xd2?720:480;*stride=mode_v==0xd2?768:512;*fmt=mode_v==0xd2?1:0;return 0;}
+static Frame FakeSelected(void){
+ if(slot_driver){for(int i=0;i<4;i++)if(slots[i][0].address)return slots[i][0];return (Frame){0};}
+ return layer_frame.address?layer_frame:game_frame;
+}
+static int FakeProbeDma(int *w,int *stride,int *fmt){
+ Frame f=FakeSelected();
+ *w=slot_driver?hardware_width:mode_v==0xd2?720:480;
+ *stride=slot_driver?hardware_stride:f.stride;*fmt=(0x39u>>((slot_driver?hardware_format:f.format)*2))&3u;return 0;
+}
+static void FakeLayoutTick(void){
+ Frame f=FakeSelected();if(!f.address)return;
+ if(f.format!=hardware_format||f.stride!=hardware_stride){
+  if(!freeze_geometry)hardware_width=desired_width;
+  hardware_format=f.format;hardware_stride=f.stride;
+ }
+}
 static unsigned user_block_bytes;
 static void *user_block;static int alloc_fail,bad_head,dep_only_fail;
 static int FakeStatus(void){return menu_bits;}
 static int FakeMode(int m,int w,int h){
- mode_calls++;
+ mode_calls++;desired_width=w;
+ if(!slot_driver){hardware_width=w;hardware_stride=m==0xd2?768:512;hardware_format=m==0xd2?0:3;}
  if(slot_driver&&m==restore_mode){
   uintptr_t a=slots[0][0].address&0x1fffffffu;
   if(a>=0x04200000u&&a<0x04400000u)native_mode_with_old_layer++;
@@ -84,6 +101,7 @@ static int FakeAsync(SceUID fd,int64_t *result){assert(fd==write_fd&&result==asy
 static int FakeAsyncStat(SceUID fd,int poll,int64_t *result){assert(poll==1);return FakeAsync(fd,result);}
 static int FakeClose(SceUID fd){assert(fd==write_fd&&current_k1==0x100000);return close_result;}
 static void Reset(void){
+ probe_native_reference=0;freeze_geometry=lcd_force_scaled=0;desired_width=hardware_width=480;hardware_stride=512;hardware_format=3;
  probe_ge=FakeProbeGe;probe_cmd=NULL;probe_dma=FakeProbeDma;probe_active_pending=probe_manual_started=probe_bound_taken=probe_ui_pending=probe_ui_seen=0;probe_word_reads=0;
  assert(intr_depth==0);slot_driver=hold_vblank=native_mode_with_old_layer=inject_native_frames=immediate_rejections=0;native_wait_reason=NULL;
  manual_native=manual_native_ready=square_down=dep_only_fail=0;
@@ -225,6 +243,27 @@ int main(void){
  // Utility already open at startup delays activation without a fault latch.
  Reset();utility_kind=1;utility_state=2;AutoControl(MenuVisible(),0);assert(!active&&!auto_fault&&!reserved);
  utility_state=0;utility_kind=0;AutoControl(MenuVisible(),100000);assert(active);
+ // Reproduce R17 exactly: changing source layout at width720 first leaves
+ // DMA at720 even after the software mode reports480. Both TV variants use
+ // one physical mode, so the width request alone does not program geometry.
+ Reset();AutoControl(0,0);slot_driver=1;memset(slots,0,sizeof(slots));
+ slots[0][0]=slots[0][1]=(Frame){0x04200000,768,0,0};
+ slots[2][0]=slots[2][1]=(Frame){0x04088000,512,3,0};
+ assert(real_frame(0,NULL,768,0,0)==0&&real_frame(0,NULL,768,0,1)==0);
+ assert(NativeFence(1)==0&&hardware_width==720&&hardware_stride==512&&hardware_format==3);
+ assert(real_mode(restore_mode,480,272)==0&&w_v==480&&hardware_width==720&&!NativeHardwareReady());
+ manual_native=manual_native_ready=1;pad_buttons=PSP_CTRL_LTRIGGER|PSP_CTRL_RTRIGGER|PSP_CTRL_SQUARE;
+ int unsafe_jobs=enqueue_calls;unsigned unsafe_allocs=ge_allocations;
+ PollFilter(0,clock_us);assert(manual_native&&enqueue_calls==unsafe_jobs&&ge_allocations==unsafe_allocs);
+ // Even if DMA width was corrected, stale LCDC timing must block success.
+ hardware_width=480;assert(NativeHardwareReady());lcd_force_scaled=1;
+ assert(!NativeHardwareReady());lcd_force_scaled=0;
+ // A hardware path that refuses the requested geometry retains ownership;
+ // it cannot free the buffers or permit the known-dangerous reactivation.
+ Reset();AutoControl(0,0);slot_driver=1;memset(slots,0,sizeof(slots));
+ slots[0][0]=slots[0][1]=(Frame){0x04200000,768,0,0};slots[2][0]=slots[2][1]=game_frame;
+ freeze_geometry=1;manual_native=1;AutoControl(0,0);
+ assert(!manual_native_ready&&reserved&&gpu_memory>=0&&edram==0x400000&&hardware_width==720);
  // Firmware-faithful model: separate live/pending addresses, shared layout,
  // and immediate-update restrictions. Reproduce the exact rejected R15 call.
  Reset();AutoControl(0,0);slot_driver=1;inject_native_frames=1;
@@ -235,9 +274,9 @@ int main(void){
  original0=(Frame){0xabbbb800,512,1,0};
  manual_native=1;AutoControl(0,0);
  assert(manual_native_ready&&!reserved&&packet==NULL&&ge_context==NULL&&gpu_memory<0&&edram==0x200000);
- assert(native_mode_with_old_layer==0&&immediate_rejections==1);
+ assert(native_mode_with_old_layer==1&&immediate_rejections==1&&hardware_width==480);
  assert(slots[0][0].address==0xabbbb800&&slots[0][1].address==0xabbbb800&&slots[0][0].format==1&&slots[0][0].stride==512);
- assert(native_rebound[0].address==0x04000000&&native_rebound[1].address==0x04088000);
+ assert(native_rebound[0].address==0x04088000&&native_rebound[1].address==0x04088000);
  assert(native_rebound[0].stride==512&&native_rebound[0].format==3&&native_rebound[1].stride==512&&native_rebound[1].format==3&&ge_releases==old_releases+1);
  assert(clock_us>=3*16667u&&NativeLayersDetached());
  slot_driver=0;manual_native=0;next_auto=clock_us;AutoControl(0,clock_us);
@@ -270,11 +309,7 @@ int main(void){
  menu_bits=0;game_frame=(Frame){0x04088000,512,3,0};
  FrameHook(0,NULL,0,3,1);assert(display_frame.address==0);
  pad_buttons=0;PollFilter(0,400);pad_buttons=square_chord;PollFilter(0,500);
- assert(manual_native);AutoControl(0,500);
- assert(!active&&gpu_memory<0&&edram==0x200000&&enqueue_calls==diagnostic_jobs);
- // The diagnostic build blocks user resumption after capturing its state.
- // Exercise the underlying fresh-allocation path independently for regression.
- manual_native=0;next_auto=500;AutoControl(0,500);
+ assert(!manual_native);AutoControl(0,500);
  assert(active&&mode_v==0xd2&&display_frame.stride==TV_STRIDE&&filter_mode==FILTER_SOFT);
  assert(gpu_memory>=0&&packet&&edram==0x400000&&enqueue_calls==diagnostic_jobs+1);
  // Fresh reactivation reallocates GPU storage; a now-unavailable optional
@@ -284,8 +319,7 @@ int main(void){
  assert(active&&reserved&&gpu_memory>=0&&dep_memory<0&&filter_mode==FILTER_SHARP);
  // Native suppression can also be selected before automatic activation.
  Reset();pad_buttons=square_chord;PollFilter(0,0);AutoControl(0,0);assert(!active&&!reserved&&enqueue_calls==0);
- pad_buttons=0;PollFilter(0,1);pad_buttons=square_chord;PollFilter(0,2);AutoControl(0,2);assert(manual_native&&!active);
- manual_native=0;AutoControl(0,2);assert(active);
+ pad_buttons=0;PollFilter(0,1);pad_buttons=square_chord;PollFilter(0,2);AutoControl(0,2);assert(active);
  // Hardware snapshots read only the five known display-DMA words, with
  // no allocations, mode changes or GE submissions. Active capture waits 2 VB.
  Reset();AutoControl(0,0);int probe_jobs=enqueue_calls,probe_modes=mode_calls;
@@ -422,9 +456,9 @@ int main(void){
  filter_mode=FILTER_DITHER;pad_buttons=0;PollFilter(0,109);alloc_fail=1;
  pad_buttons=chord;PollFilter(0,110);assert(filter_mode==FILTER_SHARP&&dep_memory<0);alloc_fail=0;
  assert(FreeGeMemory()==0);
- puts("R17 scanout-probe/manual-handoff/load-rollback/direct-write/savedata-entry/paused-GE/utility dialog/HOME and GE user-memory checks passed: immediate default-on, TV/source gating, busy retry, fault latch, NODS native status, NULL/kernel output restoration, native menu RGBA5551 GPU scaling, reboot quiesce/scanout cleanup, preserved HOME canvas/stride/format, no HOME resize, automatic resume and in-flight HOME suppression.");
+ puts("R18 mode-before-layout/scanout-probe/manual-handoff/load-rollback/direct-write/savedata-entry/paused-GE/utility dialog/HOME and GE user-memory checks passed: immediate default-on, TV/source gating, busy retry, fault latch, NODS native status, NULL/kernel output restoration, native menu RGBA5551 GPU scaling, reboot quiesce/scanout cleanup, preserved HOME canvas/stride/format, no HOME resize, automatic resume and in-flight HOME suppression.");
 }
-unsigned TestRead(unsigned off){return off==0?3:off==0x1c?2160:off==0x2c?480:0;}
+unsigned TestRead(unsigned off){return off==0?3:off==0x1c?(lcd_force_scaled?2160:slot_driver?(hardware_width==720?2160:2040):(mode_v==0xd2?2160:2040)):off==0x2c?480:0;}
 int sceKernelCpuSuspendIntr(void){int old=intr_depth;intr_depth++;return old;}void sceKernelCpuResumeIntr(int n){assert(n<intr_depth);intr_depth=n;}
 SceModule *sceKernelFindModuleByName(const char *n){if(input_fixture>=2&&!strcmp(n,"sceUtility_Driver"))return &utility_module;return input_fixture==1&&!strcmp(n,"sceImpose_Driver")?&input_module:NULL;}
 void sceKernelDcacheWritebackInvalidateAll(void){}void sceKernelIcacheInvalidateAll(void){}
@@ -433,7 +467,7 @@ void sceKernelDcacheWritebackInvalidateRange(const void *p,unsigned n){assert(p&
 unsigned pspSdkSetK1(unsigned n){unsigned old=current_k1;current_k1=n;return old;}
 unsigned sceKernelGetSystemTimeLow(void){return clock_us;}
 int sceKernelDelayThread(unsigned n){assert(intr_depth==0);unsigned previous=clock_us/16667u;clock_us+=n;
- if(slot_driver&&!hold_vblank&&clock_us/16667u!=previous)for(int i=0;i<4;i++)slots[i][0]=slots[i][1];
+ if(slot_driver&&!hold_vblank&&clock_us/16667u!=previous){for(int i=0;i<4;i++)slots[i][0]=slots[i][1];FakeLayoutTick();}
  static int stepping;if(!stepping&&save_worker_step&&save_gate&&pending_list<0){stepping=1;AutoControl(MenuVisible(),clock_us);stepping=0;}return 0;}
 int sceGeListSync(int a,int b){(void)a;(void)b;if(open_during_render){menu_bits=0x100;open_during_render=0;}if(utility_during_render){utility_kind=1;utility_state=1;sync_invalid=1;utility_during_render=0;}
  return sync_paused?4:sync_invalid?(int)0x80000100u:PSP_GE_LIST_DONE;}
@@ -494,10 +528,10 @@ unsigned TestCodeWord(unsigned a){
 
 unsigned TestHardwareWord(unsigned address){
  assert(intr_depth>0&&address>=0xbc800100u&&address<=0xbc800110u&&!(address&3));
- probe_word_reads++;
- if(address==0xbc800100u)return mode_v==0xd2?0x04200000u:game_frame.address;
- if(address==0xbc800104u)return mode_v==0xd2?1u:0u;
- if(address==0xbc800108u)return mode_v==0xd2?720u:480u;
- if(address==0xbc80010cu)return mode_v==0xd2?768u:512u;
- return 1;
+ probe_word_reads++;Frame f=FakeSelected();
+ if(address==0xbc800100u)return f.address&0x1fffffffu;
+ if(address==0xbc800104u)return (0x39u>>((slot_driver?hardware_format:f.format)*2))&3u;
+ if(address==0xbc800108u)return slot_driver?(unsigned)hardware_width:mode_v==0xd2?720u:480u;
+ if(address==0xbc80010cu)return slot_driver?(unsigned)hardware_stride:(unsigned)f.stride;
+ return 3;
 }
