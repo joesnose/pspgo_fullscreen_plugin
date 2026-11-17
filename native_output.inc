@@ -126,9 +126,10 @@ static int RestoreManualNativeOutput(void){
  }
  if(reboot_exit||reboot_late)return -1;
  // No current/queued scanout or GE list references the scaler's old memory.
- if(FreeDepMemory()<0||FreeGeMemory()<0)return NativeWait("workspace_release");
+ if(!native_keep_memory&&(FreeDepMemory()<0||FreeGeMemory()<0))return NativeWait("workspace_release");
  home_output_restored=1;utility_native_ready=1;native_wait_reason=NULL;
- ProbeScanout("manual_after_release");
+ ProbeScanout(native_keep_memory?"manual_retained":"manual_after_release");
+ LogMemory(native_keep_memory?"native_retained":"native_freed");
  logline("native_handoff_complete,edram,%d,reserved,%u,gpu_memory,%d,dep_memory,%d\n",get_size(),reserved,gpu_memory,dep_memory);
  return 0;
 }

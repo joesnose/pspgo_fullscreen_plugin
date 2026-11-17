@@ -23,6 +23,7 @@ typedef struct { unsigned short len,stubcount,vstubcount;const char *libname;voi
 #define PSP_CTRL_LTRIGGER 0x100
 #define PSP_CTRL_RTRIGGER 0x200
 #define PSP_CTRL_TRIANGLE 0x1000
+#define PSP_CTRL_SELECT 1
 #define PSP_CTRL_CIRCLE 0x2000
 #define PSP_CTRL_SQUARE 0x8000
 #define PSP_CTRL_HOME 0x10000
@@ -64,3 +65,6 @@ int sceKernelStartThread(int,int,void *);
 int sceKernelDeleteThread(int);
 int sceKernelWaitThreadEnd(int,SceUInt *);
 #endif
+
+SceSize sceKernelPartitionTotalFreeMemSize(int);
+SceSize sceKernelPartitionMaxFreeMemSize(int);

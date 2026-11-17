@@ -1,28 +1,11 @@
 {
-  "name": "PSP Go Fullscreen Plugin queued logging test",
-  "revision": 20,
-  "change": "Fixed nonblocking producer log queue; only worker performs log file I/O",
-  "baseline": "R19 IDLE and BOTH still freeze at same save; retain all profile/render/save controls",
-  "psp_build": "passed -Wall -Wextra -Werror",
+  "revision": 21,
+  "variant": "memory comparison",
+  "baseline": "R20 with queued logging",
+  "change": "SELECT enters native retaining user buffers; second SELECT frees them while staying native; partition2 total/max free measured",
   "hardware_tested": false,
-  "host_tests": "ASan/UBSan production logger tests and actual-source scaler regressions pass",
-  "logger_checks": [
-    "producer never opens/writes/closes files",
-    "flush refuses wrong thread, interrupt context or disabled interrupts",
-    "bounded FIFO, wrap/full drop and re-entry during I/O",
-    "failed open retains queue; partial writes complete; error write ends batch",
-    "record truncation stays within fixed bounds"
-  ],
-  "unchanged_from_r19": [
-    "native_output.inc",
-    "render.c",
-    "render.h",
-    "effects.c",
-    "effects.h",
-    "write_guard.inc",
-    "ge_api_guard.inc",
-    "scanout_probe.inc"
-  ],
-  "device_test": "Select BOTH with two L+R+Circle taps from default GUARD, reproduce same ending and collect log before next game launch",
-  "limitation": "Queued messages can be lost on abrupt freeze; this is not a confirmed crash fix"
+  "psp_build": "passed -Wall -Wextra -Werror",
+  "host_tests": "ASan/UBSan actual-source regression suite including retained/freed native comparison passes",
+  "controls": "L+R+SELECT once retain; twice with release between taps free; Square returns to scaled",
+  "interpretation": "A retention failure and freed success support a RAM footprint/corruption hypothesis but do not prove OOM"
 }

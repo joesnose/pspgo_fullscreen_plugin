@@ -1,120 +1,68 @@
-# PSP Go Fullscreen Plugin — R20 logging test build
+# PSP Go Fullscreen Plugin — R21 user-memory comparison
 
-[Download R20 test build and source](pspgo-tv-scale-v1-auto-home-r20.zip) · [Plugin PRX](PSPGoTVScale.prx)
+[Download R21 test build and source](pspgo-tv-scale-v1-auto-home-r21.zip) · [Plugin PRX](PSPGoTVScale.prx)
 
-Immediate fullscreen TV scaling for PSP Go. Soft is the default; opicker is not required.
-R20 changes logging only: hooks queue messages in fixed kernel memory, and the
-worker writes them to disk. Scaling, GPU/save guards, test profiles, filters and
-the working R18 display handoff are retained from R19.
+Immediate fullscreen TV scaling with a controlled user-RAM retention test.
+This diagnostic uses R20 queued logging rather than the separate cleaned/no-log
+build. No new logging I/O runs in hooks. No crash fix is claimed.
 
-## R20 test
+## Test A: native with user-RAM buffers retained
 
-Fully restart after replacing the PRX. Select BOTH (hold L+R and tap Circle twice
-after game startup), matching the previous failing test, then repeat the same
-level ending. Copy ef0:/PSPGoTVScale.txt before launching the game again.
+1. Install PSPGoTVScale.prx at ef0:/SEPLUGINS/ and fully restart.
+2. Keep the default Soft filter and GUARD profile for both attempts.
+3. Play normally. Just before selecting Complete at the failing race ending,
+   hold L+R and tap SELECT ONCE. Wait two seconds for native output to settle.
+4. Select Complete. Record whether it passes or freezes.
+5. Copy ef0:/PSPGoTVScale.txt before launching the game again; call it retained.txt.
 
-The fixed queue holds 32 records of up to 511 bytes (about 16 KiB of kernel BSS).
-Producers do not open/write/close files, allocate memory or wait for a free slot.
-They copy a formatted message under a short interrupt guard; a full queue drops
-new messages. Only the worker drains the queue, outside interrupt context with
-interrupts enabled. It opens once per batch and writes up to eight records per
-loop. Failed opens retain queued records; partial writes are completed, while
-zero/error returns stop that batch. logger_stats reports dropped records and
-write errors. Early normal worker exits flush queued messages; late reboot skips
-flushing after driver teardown starts.
+SELECT from scaled gameplay stops scaler GPU jobs and restores native display
+and 2 MiB EDRAM, but keeps existing user-RAM blocks allocated. It does not allocate
+a deposterise buffer unless one was already present. Soft normally retains only
+the approximately 23 KiB GE workspace. Do not change filters between attempts.
 
-This removes synchronous hook logging as a possible source of blocking or lock
-conflicts. It does not prove that logging caused the save-time crash. Queued
-messages may be lost if the PSP freezes before the worker can write them, so the
-last disk record is not necessarily the last event that occurred.
+## Test B: native with user-RAM buffers freed (if A crashes)
 
-## Several tests in one PRX
+Restart and reproduce the same setup. Before Complete, hold L+R and tap SELECT,
+wait two seconds, release the chord, then hold L+R and tap SELECT AGAIN. Wait two
+seconds. The second press frees both buffers while staying native; it does not
+restart scaling. Select Complete and collect the log as freed.txt.
 
-Hold L+R and tap Circle during scaled gameplay to cycle these profiles once per
-press. The name appears briefly onscreen and is recorded in PSPGoTVScale.txt.
-Default NODS mapping is L1+R1+Circle. No INI is needed.
+Both tests use identical native geometry, no scaler jobs and 2 MiB EDRAM.
+The user-RAM allocation lifetime is the deliberate difference. If A passes,
+resident user-RAM blocks alone are not sufficient to reproduce the fault in that
+attempt. If A fails but B passes, user-RAM occupancy or corruption becomes a
+stronger suspect; this alone does not prove an out-of-memory failure.
 
-| Profile | Circle taps after starting the game | Behaviour |
-| --- | --- | --- |
-| GUARD | 0 (default) | Stop new scaler lists while the game saves/restores GE context; wait up to 100 ms for the scaler's own list to finish before calling the original context API. |
-| IDLE | 1 | Submit scaler work only when the GE queue is idle; context calls are traced without the new drain guard. |
-| BOTH | 2 | Apply both checks. |
-| BASELINE | 3 | Disable the new context/idle guards; retain tracing and the existing save/load protections. |
+L+R+Square retains its previous behaviour: from scaled mode it enters native
+and frees buffers; from ready native mode it returns to scaling. Avoid Square
+during test A because it would leave the retained-native test. Filter cycling
+is disabled in native mode to prevent accidental deposterise-buffer release.
+Existing L+R+Circle profiles and L+R+Triangle filters remain available while scaled.
+Default external NODS mapping uses L1+R1 with the same third button.
 
-Use one profile for each attempt at the failing level ending. If it crashes,
-restart, choose the next profile before reproducing it, and copy the log before
-starting another game (startup replaces the log). You can name copies GUARD.txt,
-IDLE.txt, BOTH.txt, etc. There is no need to reinstall the plugin between profiles.
-Start with GUARD; if that still fails, try IDLE, then BOTH. BASELINE is optional
-because the failure with the previous build is already known. Profiles reset to
-GUARD each game startup. Do not change profiles during a save/load operation.
+## Measurements
 
-The idle check may reduce update frequency under heavy GPU load; this is an
-experimental comparison. None of these modes is a confirmed device crash fix.
+user_memory records point, time, partition-2 total_free/max_free, allocation UIDs,
+requested buffer sizes, EDRAM size and keep flag. Measurements occur at state
+changes and once per second. Look for native_retained (GPU UID >=0, EDRAM2097152)
+and native_freed (GPU/dep UIDs -1, EDRAM2097152). Actual allocator rounding may
+make the free-byte difference larger than the requested size. Each free getter
+is its own snapshot; the game may allocate between calls. The largest free block
+and total free RAM do not prove how the game's allocator behaves.
 
-## Existing R19 test profiles
+Log fallback is ms0:/PSPGoTVScale.txt. Queued tail messages can be lost in a hard
+freeze; copy logs before the next game startup overwrites them.
 
-The R18 log records successful toggles: native DMA width returns to 480 with a
-512-pixel stride, and scaler resources are released. The later crash occurs
-before a new savedata-init or file-write entry appears. There are zero recorded
-list timeouts. This does not establish a RAM shortage or pinpoint the fault.
-
-Firmware GE context save/restore requires GE idle. The existing guard tests whether concurrent
-scaler submissions interfere with the game's own context operations. The guard
-suppresses new submissions atomically with enqueue, while the existing worker
-retires its own list. It never cancels the game's work, modifies context buffers,
-fakes success or retries the original call. Timeout still calls the original
-exactly once with its original arguments/K1 and preserves its result.
-
-User GE Break is traced and runs immediately, since it may be needed to resume
-the queue. Internal driver context operations and the plugin's kernel imports
-bypass these user-syscall wrappers. Successful tracing is rate-limited to one
-entry/return pair per operation per second, with cumulative counters in stats;
-a missing return is only a clue, and rate limiting means some calls are unlogged.
-All profiles retain existing utility/save/HOME controls, with a final atomic
-utility gate before scaler enqueue. BASELINE is therefore a comparison with the
-new experimental guards disabled, not a byte-identical copy of R18.
-
-## Install and controls
-
-Fully restart after replacing ef0:/SEPLUGINS/PSPGoTVScale.prx. Existing GAME entry:
-
-    game, ef0:/SEPLUGINS/PSPGoTVScale.prx, on
-
-- L+R+Circle: select test profile.
-- L+R+Square: switch fullscreen/native output (R18 hardware verification retained).
-- L+R+Triangle: cycle Sharp, Soft, Blur, CRT, Soft CRT, RGB Mask, Sharpen,
-  Posterise, Dither and Deposterise.
-
-Confirm the load screen still works before the level-ending test. Logs are at
- ef0:/PSPGoTVScale.txt, falling back to ms0:/PSPGoTVScale.txt. Look for test_profile,
- test_stats, ge_api_enter, ge_api_handoff and ge_api_return. ge_api_guard,1 confirms
-all three user GE hooks resolved; ge_api_guard,0 means the context guard is unavailable.
-
-## Build and validation
+## Build and checks
 
     docker run --rm -v "$PWD":/src -w /src pspdev/pspdev:latest make -j4
 
-    cc -DHOST_TEST -D_GNU_SOURCE -O1 -g -std=c11 -Wall -Wextra -Werror -Wno-pointer-to-int-cast -Wno-int-to-pointer-cast -fsanitize=address,undefined auto_home_test.c render.c effects.c -o /tmp/go-tv-auto-test
-    /tmp/go-tv-auto-test
+    cc -DHOST_TEST -D_GNU_SOURCE -O1 -g -std=c11 -Wall -Wextra -Werror -Wno-pointer-to-int-cast -Wno-int-to-pointer-cast -fsanitize=address,undefined auto_home_test.c render.c effects.c -o /tmp/memory-test
+    /tmp/memory-test
 
-Strict PSP compilation and ASan/UBSan actual-source host regressions pass. New
-checks cover profile input/edges, context pointer/K1/result preservation, worker
-retirement and bounded paused-list waits, immediate Break, atomic enqueue gating,
-and busy idle-only skipping without changing the visible frame or faulting.
-Prior native handoff, utility/load, HOME, memory, paused-GE and input tests pass.
-The user GE NIDs were verified against the Go 6.61 driver export table; Sony
-firmware binaries are not distributed. No guessed register writes are added.
-R20 has not been tested on physical PSP hardware. The user's R19 IDLE and BOTH
-runs still froze at the same level-ending save.
-
-Queued logger regression:
-
-    cc -O1 -g -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined logger_test.c -o /tmp/go-tv-logger-test
-    /tmp/go-tv-logger-test
-
-The production logger tests verify no producer file I/O, worker/interrupt guards,
-FIFO order with producer re-entry during writes, queue wrap/full drops, bounded
-batches, failed opens, partial/error writes and truncation. Existing actual-source
-scaler regressions also pass. Render/effects, native handoff, scanout probe,
-file-write guard and GE-API guard files are byte-identical to R19.
+PSP build and ASan/UBSan actual-source regressions pass. The new test verifies
+that retained-native has no new GE jobs, unchanged user allocation IDs and free
+bytes, native DMA geometry and 2 MiB EDRAM; a second SELECT releases both buffers
+without changing output or submitting work, increases measured mock free RAM,
+and Square then resumes safely. Previous native/load/HOME/input tests remain.
+Host free-memory getters are controlled fakes, not device measurements.

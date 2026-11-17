@@ -117,6 +117,7 @@ static int FakeBreak(int mode,void *argument){
  assert(ge_api_entries==1&&pending_list==context_expected_pending);context_calls++;return context_result;
 }
 static void Reset(void){
+ native_keep_memory=select_down=0;
  test_profile=1;idle_skips=ge_api_entries=circle_down=0;notice_label=NULL;
  memset(ge_api_calls,0,sizeof(ge_api_calls));memset(ge_api_logged,0,sizeof(ge_api_logged));
  ge_worker_step=inject_ge_entry=context_calls=0;real_ge_save=real_ge_restore=FakeContext;real_ge_break=FakeBreak;
@@ -143,6 +144,21 @@ static void Reset(void){
  assert(!((uintptr_t)packet&63)&&!((uintptr_t)ge_context&63));
 }
 int main(void){
+ Reset();AutoControl(0,0);assert(InitDepMemory()==0);
+ SceUID held_gpu=gpu_memory,held_dep=dep_memory;
+ unsigned retained_free=sceKernelPartitionTotalFreeMemSize(2);int held_jobs=enqueue_calls;
+ unsigned memory_chord=PSP_CTRL_LTRIGGER|PSP_CTRL_RTRIGGER|PSP_CTRL_SELECT;
+ pad_buttons=memory_chord;PollFilter(0,0);assert(manual_native&&native_keep_memory);
+ AutoControl(0,0);assert(manual_native_ready&&!reserved&&!active&&edram==0x200000);
+ assert(gpu_memory==held_gpu&&dep_memory==held_dep&&enqueue_calls==held_jobs);
+ assert(sceKernelPartitionTotalFreeMemSize(2)==retained_free&&NativeHardwareReady());
+ pad_buttons=0;PollFilter(0,0);pad_buttons=memory_chord;PollFilter(0,0);
+ assert(manual_native&&!native_keep_memory&&!manual_native_ready);
+ AutoControl(0,0);assert(manual_native_ready&&gpu_memory<0&&dep_memory<0&&edram==0x200000);
+ assert(sceKernelPartitionTotalFreeMemSize(2)>retained_free&&enqueue_calls==held_jobs&&NativeHardwareReady());
+ pad_buttons=0;PollFilter(0,0);pad_buttons=PSP_CTRL_LTRIGGER|PSP_CTRL_RTRIGGER|PSP_CTRL_SQUARE;PollFilter(0,0);
+ assert(!manual_native);AutoControl(0,clock_us);assert(active&&reserved&&gpu_memory>=0);
+
  // R19: user context operations drain only our list, suppress new submissions,
  // preserve pointers/K1/results, and leave native/load handling untouched.
  Reset();AutoControl(0,0);context_parameter=(PspGeContext *)0x12345678;
@@ -601,3 +617,6 @@ unsigned TestHardwareWord(unsigned address){
  if(address==0xbc80010cu)return slot_driver?(unsigned)hardware_stride:(unsigned)f.stride;
  return 3;
 }
+
+SceSize sceKernelPartitionTotalFreeMemSize(int partition){assert(partition==2);return 0x1000000u-(gpu_memory>=0?user_block_bytes:0u)-(dep_memory>=0?dep_block_bytes:0u);}
+SceSize sceKernelPartitionMaxFreeMemSize(int partition){return sceKernelPartitionTotalFreeMemSize(partition);}
