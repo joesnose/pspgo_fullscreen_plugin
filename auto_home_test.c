@@ -117,7 +117,7 @@ static int FakeBreak(int mode,void *argument){
  assert(ge_api_entries==1&&pending_list==context_expected_pending);context_calls++;return context_result;
 }
 static void Reset(void){
- native_keep_memory=select_down=0;
+ native_keep_edram=native_edram_held=native_keep_memory=select_down=0;
  test_profile=1;idle_skips=ge_api_entries=circle_down=0;notice_label=NULL;
  memset(ge_api_calls,0,sizeof(ge_api_calls));memset(ge_api_logged,0,sizeof(ge_api_logged));
  ge_worker_step=inject_ge_entry=context_calls=0;real_ge_save=real_ge_restore=FakeContext;real_ge_break=FakeBreak;
@@ -149,7 +149,10 @@ int main(void){
  unsigned retained_free=sceKernelPartitionTotalFreeMemSize(2);int held_jobs=enqueue_calls;
  unsigned memory_chord=PSP_CTRL_LTRIGGER|PSP_CTRL_RTRIGGER|PSP_CTRL_SELECT;
  pad_buttons=memory_chord;PollFilter(0,0);assert(manual_native&&native_keep_memory);
- AutoControl(0,0);assert(manual_native_ready&&!reserved&&!active&&edram==0x200000);
+ AutoControl(0,0);assert(manual_native_ready&&!reserved&&!active&&edram==0x400000&&native_edram_held);
+ assert(GetSizeHook()==0x200000&&gpu_memory==held_gpu&&dep_memory==held_dep&&enqueue_calls==held_jobs);
+ pad_buttons=0;PollFilter(0,0);pad_buttons=memory_chord;PollFilter(0,0);
+ AutoControl(0,0);assert(manual_native_ready&&!reserved&&!active&&edram==0x200000&&!native_edram_held);
  assert(gpu_memory==held_gpu&&dep_memory==held_dep&&enqueue_calls==held_jobs);
  assert(sceKernelPartitionTotalFreeMemSize(2)==retained_free&&NativeHardwareReady());
  pad_buttons=0;PollFilter(0,0);pad_buttons=memory_chord;PollFilter(0,0);
@@ -159,6 +162,14 @@ int main(void){
  pad_buttons=0;PollFilter(0,0);pad_buttons=PSP_CTRL_LTRIGGER|PSP_CTRL_RTRIGGER|PSP_CTRL_SQUARE;PollFilter(0,0);
  assert(!manual_native);AutoControl(0,clock_us);assert(active&&reserved&&gpu_memory>=0);
 
+ // Direct resume and reboot must release held 4 MiB state safely.
+ Reset();AutoControl(0,0);pad_buttons=memory_chord;PollFilter(0,0);AutoControl(0,0);
+ assert(native_edram_held&&edram==0x400000);
+ pad_buttons=0;PollFilter(0,0);pad_buttons=PSP_CTRL_LTRIGGER|PSP_CTRL_RTRIGGER|PSP_CTRL_SQUARE;PollFilter(0,0);
+ AutoControl(0,clock_us);assert(active&&reserved&&!native_edram_held&&edram==0x400000);
+ Reset();AutoControl(0,0);pad_buttons=memory_chord;PollFilter(0,0);AutoControl(0,0);
+ assert(native_edram_held);reboot_exit=1;running=0;CleanupBeforeReboot();
+ assert(!native_edram_held&&!reserved&&edram==0x200000&&worker_done);
  // R19: user context operations drain only our list, suppress new submissions,
  // preserve pointers/K1/results, and leave native/load handling untouched.
  Reset();AutoControl(0,0);context_parameter=(PspGeContext *)0x12345678;

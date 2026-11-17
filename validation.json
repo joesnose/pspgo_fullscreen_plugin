@@ -1,11 +1,10 @@
 {
-  "revision": 21,
-  "variant": "memory comparison",
-  "baseline": "R20 with queued logging",
-  "change": "SELECT enters native retaining user buffers; second SELECT frees them while staying native; partition2 total/max free measured",
-  "hardware_tested": false,
+  "revision": 22,
+  "variant": "native EDRAM comparison",
+  "baseline": "R21 native retained user RAM plus 2MiB EDRAM passed Complete on user device",
+  "change": "first SELECT retains physical4MiB EDRAM plus user RAM under native no-jobs output; second SELECT shrinks to2MiB; third frees RAM",
   "psp_build": "passed -Wall -Wextra -Werror",
-  "host_tests": "ASan/UBSan actual-source regression suite including retained/freed native comparison passes",
-  "controls": "L+R+SELECT once retain; twice with release between taps free; Square returns to scaled",
-  "interpretation": "A retention failure and freed success support a RAM footprint/corruption hypothesis but do not prove OOM"
+  "hardware_tested": false,
+  "host_tests": "ASan/UBSan actual-source suite passes with native4MiB retention, size masking, staged shrink/free, direct resume and reboot cleanup",
+  "limitations": "diagnostic only; outcome distinguishes conditions, not exact cause"
 }

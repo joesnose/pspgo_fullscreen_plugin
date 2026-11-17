@@ -18,7 +18,7 @@
 #include <stddef.h>
 #include "render.h"
 #include "effects.h"
-PSP_MODULE_INFO("PSPGoTVScaleV1Auto",0x1000,1,21);
+PSP_MODULE_INFO("PSPGoTVScaleV1Auto",0x1000,1,22);
 extern void sctrlHENPatchSyscall(void *,void *);
 static const char *logpath;
 #include "logger.inc"
@@ -76,7 +76,7 @@ static int reboot_joined,worker_done;
 static volatile int home_output_restored,utility_native_ready;
 static int auto_fault;
 static volatile int manual_native;
-static int manual_native_ready,square_down,native_keep_memory,select_down;
+static int manual_native_ready,square_down,native_keep_memory,select_down,native_keep_edram,native_edram_held;
 typedef int (*SavedataInitFn)(void *);
 static SavedataInitFn real_savedata_init;
 static int savedata_hooked;
@@ -151,7 +151,7 @@ static void ProbeScanout(const char *);
 static int NativeHardwareReady(void);
 static void ArmManualProbe(void);
 static void LogMemory(const char *point){
- logline("user_memory,point,%s,ms,%u,total_free,%u,max_free,%u,gpu_uid,%d,dep_uid,%d,ge_workspace_bytes,%u,dep_buffer_bytes,%u,edram,%d,keep,%u\n",point,sceKernelGetSystemTimeLow()/1000,sceKernelPartitionTotalFreeMemSize(2),sceKernelPartitionMaxFreeMemSize(2),gpu_memory,dep_memory,gpu_memory>=0?(unsigned)sizeof(GeWorkspace)+63u:0u,dep_memory>=0?DEPOSTER_BYTES+63u:0u,get_size?get_size():0,native_keep_memory);
+ logline("user_memory,point,%s,ms,%u,total_free,%u,max_free,%u,gpu_uid,%d,dep_uid,%d,ge_workspace_bytes,%u,dep_buffer_bytes,%u,edram,%d,keep,%u,held_edram,%u\n",point,sceKernelGetSystemTimeLow()/1000,sceKernelPartitionTotalFreeMemSize(2),sceKernelPartitionMaxFreeMemSize(2),gpu_memory,dep_memory,gpu_memory>=0?(unsigned)sizeof(GeWorkspace)+63u:0u,dep_memory>=0?DEPOSTER_BYTES+63u:0u,get_size?get_size():0,native_keep_memory,native_edram_held);
 }
 static void PollFilter(int menu,unsigned now) {
   SceCtrlData pad;memset(&pad,0,sizeof(pad));
@@ -163,7 +163,8 @@ static void PollFilter(int menu,unsigned now) {
   int select=(pad.Buttons&PSP_CTRL_SELECT)!=0;
   unsigned chord=PSP_CTRL_LTRIGGER|PSP_CTRL_RTRIGGER;
   if(!menu&&!reboot_exit&&!square&&!triangle&&!circle&&pending_list<0&&select&&!select_down&&(pad.Buttons&chord)==chord){
-    if(!manual_native){native_keep_memory=1;manual_native=1;manual_native_ready=0;next_auto=now;ArmManualProbe();LogMemory("retain_requested");}
+    if(!manual_native){native_keep_edram=1;native_keep_memory=1;manual_native=1;manual_native_ready=0;next_auto=now;ArmManualProbe();LogMemory("retain_requested");}
+    else if(manual_native_ready&&native_keep_edram){native_keep_edram=0;manual_native_ready=0;next_auto=now;LogMemory("shrink_requested");}
     else if(manual_native_ready&&native_keep_memory){native_keep_memory=0;manual_native_ready=0;next_auto=now;LogMemory("release_requested");}
   }
   select_down=select;
@@ -173,7 +174,7 @@ static void PollFilter(int menu,unsigned now) {
       logline("native_resume_blocked,hardware_not_ready,1\n");
     } else {
       manual_native=!manual_native;manual_native_ready=0;next_auto=now;
-      if(manual_native){native_keep_memory=0;ArmManualProbe();}
+      if(manual_native){native_keep_edram=0;native_keep_memory=0;ArmManualProbe();}
       logline("diagnostic_native_requested,%u\n",manual_native);
     }
   }
@@ -329,7 +330,7 @@ static int GetModeHook(int *mode,int *width,int *height) {
   if(ret>=0&&reserved){if(mode)*mode=0;if(width)*width=480;if(height)*height=272;}
   return ret;
 }
-static int GetSizeHook(void){return reserved?0x200000:get_size();}
+static int GetSizeHook(void){return (reserved||native_edram_held)?0x200000:get_size();}
 static unsigned Jump(const void *p){return 0x08000000u|(((uintptr_t)p&0x0fffffffu)>>2);}
 static void PrepareHook(Hook *h,unsigned address) {
   h->address=(unsigned *)address;
@@ -500,7 +501,7 @@ static int Render(Frame f,unsigned target){
 static int Deactivate(void) {
   if(pending_list>=0)return -1;
   active=0;
-  if(reserved) {
+  if(reserved||native_edram_held) {
     int ret=0;
     if(TvActive())ret=real_mode(restore_mode,480,272);
     Frame f=Snapshot(&original0);
@@ -512,7 +513,7 @@ static int Deactivate(void) {
     else ret=-1;
     sceKernelCpuResumeIntr(intr);
     if(ret<0){logline("disable_pending_edram_cleanup\n");return -1;}
-    reserved=0;
+    reserved=native_edram_held=0;
   }
   abort_requested=0;ready_buffer=NULL;logline("disabled\n");return 0;
 }
@@ -618,6 +619,7 @@ static int ResumeAfterHome(void) {
   if(MenuVisible())return 1;
   ReleaseHomeOutput();
   if(!reserved){
+    if(native_edram_held&&ReleaseNativeEdram()!=0)return 1;
     if(!ReadyToAutoStart())return 1;
     int ret=Activate();
     if(ret<0)return -1;
@@ -693,7 +695,7 @@ static void CleanupBeforeReboot(void) {
   if(reboot_late){worker_done=1;return;}
   if(pending_list>=0)WaitList(100000);
   if(reboot_late){worker_done=1;return;}
-  if(pending_list<0&&reserved) {
+  if(pending_list<0&&(reserved||native_edram_held)) {
     // Never leave the menu/user buffer or scaler layer selected for reboot.
     int frame_ret=real_frame(0,NULL,0,0,1);
     if(reboot_late){worker_done=1;return;}
@@ -704,7 +706,7 @@ static void CleanupBeforeReboot(void) {
                                         (unsigned)(sceKernelGetSystemTimeLow()-start)<50000u);
     int intr=sceKernelCpuSuspendIntr();
     if(!reboot_late&&frame_ret>=0&&mode_ret>=0&&(unsigned)((unsigned)sceDisplayGetVcount()-vcount)>=2&&
-       sceGeDrawSync(1)==PSP_GE_LIST_DONE&&set_size(0x200000)>=0)reserved=0;
+       sceGeDrawSync(1)==PSP_GE_LIST_DONE&&set_size(0x200000)>=0)reserved=native_edram_held=0;
     sceKernelCpuResumeIntr(intr);
   }
   if(!reboot_late)logline("reboot_worker_end,pending,%d,reserved,%u\n",pending_list,reserved);
@@ -738,7 +740,7 @@ static int MainThread(SceSize argc,void *argv) {
   for(unsigned i=0;i<2;++i){SceUID fd=sceIoOpen(paths[i],PSP_O_WRONLY|PSP_O_CREAT|PSP_O_TRUNC,0666);if(fd>=0){logpath=paths[i];sceIoClose(fd);break;}}
   if(!logpath)return 0;
   unsigned fw=sceKernelDevkitVersion();
-  logline("PSPGoTVScale,base,alpha1,variant,auto_home_r21_memory,model,%d,devkit,0x%08X\n",sceKernelGetModel(),fw);
+  logline("PSPGoTVScale,base,alpha1,variant,auto_home_r22_edram,model,%d,devkit,0x%08X\n",sceKernelGetModel(),fw);
   if(sceKernelGetModel()!=4||(fw!=0x06060010&&fw!=0x06060110)){logline("unsupported_model_or_firmware\n");FlushLogs(LOG_QUEUE_CAPACITY);return 0;}
   logline("test_profile,id,%u,name,%s,shortcut,L_R_Circle\n",test_profile,TestProfileName(test_profile));
   filter_mode=FILTER_SOFT;logline("filter,%s\n",FilterName(filter_mode));
@@ -803,7 +805,7 @@ int module_stop(SceSize args,void *argp) {
   if(pending_list>=0||ge_api_entries||save_entries||HasPendingWrites())return -1; // Do not free a context/list still used by GE.
   running=0;
   if(worker>=0){sceKernelWaitThreadEnd(worker,NULL);sceKernelDeleteThread(worker);worker=-1;}
-  if(reserved&&Deactivate()<0)return -1;
+  if((reserved||native_edram_held)&&Deactivate()<0)return -1;
   RemoveHooks();if(FreeDepMemory()<0)return -1;return FreeGeMemory();
 }
 
