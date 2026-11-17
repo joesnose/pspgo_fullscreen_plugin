@@ -1,6 +1,6 @@
 {
-  "variant": "Simple R24",
-  "revision": 24,
+  "variant": "Simple R25",
+  "revision": 25,
   "hardware_tested": false,
   "psp_build": "passed -Wall -Wextra -Werror",
   "host_tests": [
@@ -26,7 +26,8 @@
     "savedata-entry syscall hook"
   ],
   "limitation": "system dialog fixes retained; separate Burnout silent autosave crash not claimed fixed",
-  "change": "Retired/paused list results preserve last confirmed scaled scanout outside real dialogs; substitute active game layer clears",
-  "evidence": "Assassin Creed R23 log ~600 retired events,355 resumes versus one utility cycle",
-  "new_tests": "50 invalid-ID frames keep active output without mode/frame handoffs; rendering resumes; game NULL clear substituted, real HOME clear passed through"
+  "change": "Owned tokenized GE finish callback confirms completed frames despite retired IDs; keep scaled HOME selected during unconfirmed frames/clears",
+  "evidence": "R24 Soft log shows3029 retired-list events and1148 native pause messages with only one utility cycle",
+  "new_tests": "Completed-token invalid ID succeeds while global GE busy; mismatch rejected; unconfirmed work idle-fenced; scaled HOME holds during retirement and NULL clears; normal close restores original clear",
+  "callback_safety": "volatile matching-token store only in interrupt; no I/O/alloc/wait/GE calls"
 }

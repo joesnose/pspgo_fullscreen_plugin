@@ -64,3 +64,8 @@ int sceKernelStartThread(int,int,void *);
 int sceKernelDeleteThread(int);
 int sceKernelWaitThreadEnd(int,SceUInt *);
 #endif
+
+typedef void (*PspGeCallback)(int,void *);
+typedef struct {PspGeCallback signal_func;void *signal_arg;PspGeCallback finish_func;void *finish_arg;} PspGeCallbackData;
+int sceGeSetCallback(PspGeCallbackData *);
+int sceGeUnsetCallback(int);

@@ -1,24 +1,37 @@
-# PSP Go Fullscreen Plugin — Simple R24
+# PSP Go Fullscreen Plugin — Simple R25
 
-[Download Simple R24 build and source](PSPGoTVScale-simple-r24.zip) · [PRX](PSPGoTVScale.prx)
+[Download Simple R25 build and source](PSPGoTVScale-simple-r25.zip) · [PRX](PSPGoTVScale.prx)
 
 Automatic fullscreen TV scaling for PSP Go on ARK, 6.60/6.61, progressive
 component output. Starts enabled with Soft filtering. No INI is needed.
 
-## R24 display stability
+## R25 completion tracking and HOME stability
 
-The Assassin's Creed R23 log contains about 600 retired-list events and 355
-scaling resumes despite one real utility cycle. An unconfirmed/paused/retired
-scaler frame now leaves the last confirmed scaled buffer selected during normal
-gameplay. It no longer invokes the native/menu restore path without a real HOME
-or utility transition. Retired IDs still require global idle before packet reuse;
-a paused list is still retained until completion. Unconfirmed frames are discarded.
+R24's Assassin's Creed log confirms 3,029 retired-list events. R24 stopped
+showing the uncertain frames, but still lacked a way to recognize completed
+frames whose list IDs were already retired. It also repeatedly restored native
+HOME output on these events, causing menu flicker.
 
-Clearing the top game display layer while scaling now keeps the scaled layer
-selected instead of exposing a native framebuffer under 720-wide scanout. The
-original clear is recorded and genuine menu/utility clears still pass through.
-These changes target the observed quartered/fullscreen flicker, but require
-real-game verification. Controls and all twelve filters remain unchanged.
+R25 registers one owned GE finish callback. Each scaler list has a nonzero
+16-bit token in FINISH; the interrupt callback only copies a matching token to
+a volatile memory flag. No file I/O, allocation, waiting or GE calls run there.
+The worker can accept a positively identified completed frame even when the
+list ID is invalid and the game has started more GPU work. PSP's synchronous
+single-CPU finish interrupt also restores the list's saved context before the
+worker resumes; the worker observes the flag under an interrupt guard.
+
+Unconfirmed/reset work still requires the existing idle fence before reuse;
+paused-list storage remains retained. A failed callback registration logs a
+negative finish_callback ID and falls back to the existing polling behaviour.
+The callback is unregistered only after normal worker quiescence on unload;
+reboot leaves it resident with the protected workspace until firmware teardown.
+logger_stats now includes finish_confirmed, counting callback-confirmed waits.
+
+A retired ID during HOME no longer clears an already scaled menu or repeatedly
+restores the native menu. Native layer clears while a scaled HOME image is ready
+retain that image until a replacement or actual menu close. The original clear
+is still captured for close/resume. System utility dialogs keep their native
+ownership path. These changes need real-game performance and HOME verification.
 
 ## Controls
 
@@ -60,7 +73,7 @@ silent end-of-race save crash; the system save/load dialog fix is retained.
 
 Basic queued diagnostic logging remains at ef0:/PSPGoTVScale.txt (ms0:/ fallback).
 Hooks queue messages in fixed memory; the worker writes them outside interrupt
-context. The banner identifies simple_r24. No clocks, DDR unlocks, NODS binary
+context. The banner identifies simple_r25. No clocks, DDR unlocks, NODS binary
 changes or VSH volume work are included.
 
 ## Install
@@ -87,3 +100,5 @@ HOME/utility/native/reboot handling, 144 GPU format/stride/aspect/buffer cases,
 and queued logger safety. Host tests do not execute real PSP hardware.
 
 New actual-source checks repeatedly retire 50 list IDs without a menu and verify no output/mode handoff or unconfirmed-frame publication, then verify successful rendering resumes. Layer-clear substitution and genuine HOME clearing are also checked.
+
+R25 actual-source checks verify finish-confirmed invalid IDs under a busy global GE queue, mismatched-token rejection, unchanged idle fencing for unconfirmed work, stable scaled HOME across retired IDs and layer clears, and normal HOME close/resume.

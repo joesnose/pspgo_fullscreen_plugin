@@ -6,6 +6,7 @@
 #include <assert.h>
 #include <stdio.h>
 #include <sys/mman.h>
+static int finish_on_enqueue;
 static unsigned clock_us,menu_bits,pad_buttons,current_k1;
 static int utility_kind,utility_state;
 static int FakeUtilityType(void){return utility_kind;}
@@ -81,6 +82,7 @@ static int FakeFrame(int pri,void *p,int stride,int format,int sync){
  return 0;
 }
 static void Reset(void){
+ finish_callback=-1;finish_sequence=finish_expected=finish_seen=finish_confirmed=finish_on_enqueue=0;
  notice_label=NULL;
  probe_native_reference=0;freeze_geometry=lcd_force_scaled=0;desired_width=hardware_width=480;hardware_stride=512;hardware_format=3;
  probe_ge=FakeProbeGe;probe_cmd=NULL;probe_dma=FakeProbeDma;probe_active_pending=probe_manual_started=probe_bound_taken=probe_ui_pending=probe_ui_seen=0;probe_word_reads=0;
@@ -101,6 +103,24 @@ static void Reset(void){
  assert(!((uintptr_t)packet&63)&&!((uintptr_t)ge_context&63));
 }
 int main(void){
+ // A positively completed packet remains usable even if its ID is already
+ // invalid and the game has started more work; no global idle is required.
+ Reset();InitFinishCallback();AutoControl(0,0);unsigned good_draws=draws;
+ sync_invalid=ge_busy=finish_on_enqueue=1;
+ assert(Render(game_frame,1)==0&&draws==good_draws+1&&pending_list<0&&finish_confirmed==1&&active);
+ // Callback token mismatch cannot turn unconfirmed work into completion.
+ finish_seen=0;GeFinish((int)(finish_expected+1),NULL);assert(!finish_seen);
+ finish_on_enqueue=0;assert(Render(game_frame,0)==-2&&pending_list==7);
+ ge_busy=0;assert(WaitList(1000)==1&&pending_list<0);
+ // HOME can retain a previously completed menu across unconfirmed frames.
+ Reset();InitFinishCallback();AutoControl(0,0);menu_bits=0x100;
+ FrameHook(0,(void *)0xabbbb800,512,1,1);AutoControl(1,0);assert(RenderHome()==0&&home_scaled_ready);
+ void *menu_kept=ready_buffer;int menu_frame_calls=frame_calls;
+ sync_invalid=1;assert(RenderHome()==1&&home_scaled_ready&&home_output_restored&&ready_buffer==menu_kept);
+ AutoControl(1,clock_us);assert(frame_calls==menu_frame_calls);
+ FrameHook(0,NULL,0,3,1);assert(display_frame.address==(uintptr_t)menu_kept&&display_frame.stride==768);
+ menu_bits=0;ReleaseHomeOutput();assert(!home_scaled_ready&&display_frame.address==0);
+
  // Rapidly retired IDs without a real menu must never remove scaled output.
  Reset();AutoControl(0,0);void *kept_output=ready_buffer;
  int kept_modes=mode_calls,kept_frames=frame_calls;unsigned kept_draws=draws;
@@ -113,7 +133,7 @@ int main(void){
  // A game clearing layer zero must not expose its 480-wide buffer at 720 mode.
  FrameHook(0,NULL,0,3,1);
  assert(Snapshot(&original0).address==0&&display_frame.address==(uintptr_t)ready_buffer&&display_frame.stride==768&&display_frame.format==0);
- // A genuine HOME clear must still pass through unchanged.
+ // A HOME clear before a scaled menu is ready must pass through unchanged.
  menu_bits=0x100;FrameHook(0,NULL,0,3,1);assert(display_frame.address==0);
 
  Reset();AutoControl(0,0); // First ready sample activates immediately.
@@ -390,7 +410,7 @@ int main(void){
  filter_mode=FILTER_DITHER;pad_buttons=0;PollFilter(0,109);alloc_fail=1;
  pad_buttons=chord;PollFilter(0,110);assert(filter_mode==FILTER_SHARP&&dep_memory<0);alloc_fail=0;
  assert(FreeGeMemory()==0);
- puts("Simple R24 retired-ID stability plus automatic startup/filter cycle/native toggle/utility dialog/HOME/paused-GE and GE user-memory checks passed: immediate default-on, TV/source gating, busy retry, fault latch, NODS native status, NULL/kernel output restoration, native menu RGBA5551 GPU scaling, reboot quiesce/scanout cleanup, preserved HOME canvas/stride/format, no HOME resize, automatic resume and in-flight HOME suppression.");
+ puts("Simple R25 finish-confirmed frames and stable HOME plus automatic startup/filter cycle/native toggle/utility dialog/HOME/paused-GE and GE user-memory checks passed: immediate default-on, TV/source gating, busy retry, fault latch, NODS native status, NULL/kernel output restoration, native menu RGBA5551 GPU scaling, reboot quiesce/scanout cleanup, preserved HOME canvas/stride/format, no HOME resize, automatic resume and in-flight HOME suppression.");
 }
 unsigned TestRead(unsigned off){return off==0?3:off==0x1c?(lcd_force_scaled?2160:slot_driver?(hardware_width==720?2160:2040):(mode_v==0xd2?2160:2040)):off==0x2c?480:0;}
 int sceKernelIsIntrContext(void){return 0;}
@@ -416,7 +436,9 @@ int sceGeListEnQueue(const void *p,void *s,int cb,PspGeListArgs *a){
  assert((uintptr_t)packet->vertices>=0x08800000u&&(uintptr_t)packet->clear<0x0c000000u);
  assert((uintptr_t)packet->scanlines>=0x08800000u&&(uintptr_t)(packet->scanlines+480)<=0x0c000000u);
  assert((uintptr_t)a->context>=0x08800000u&&(uintptr_t)a->context+sizeof(*ge_context)<=0x0c000000u);
- enqueue_calls++;return fail_enqueue?-1:7;
+ enqueue_calls++;
+ if(finish_on_enqueue&&!fail_enqueue&&cb>=0)GeFinish((int)(packet->commands[packet->count-2]&0xffffu),NULL);
+ return fail_enqueue?-1:7;
 }
 int sceGeDrawSync(int n){(void)n;return ge_busy?1:0;}
 int sceDisplayWaitVblankStart(void){clock_us+=16667;return 0;}
@@ -473,3 +495,6 @@ unsigned TestHardwareWord(unsigned address){
  if(address==0xbc80010cu)return slot_driver?(unsigned)hardware_stride:(unsigned)f.stride;
  return 3;
 }
+
+int sceGeSetCallback(PspGeCallbackData *c){assert(c->finish_func==GeFinish&&c->signal_func==NULL);return 5;}
+int sceGeUnsetCallback(int id){assert(id==5);return 0;}

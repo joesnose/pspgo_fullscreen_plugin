@@ -18,7 +18,7 @@
 #include <stddef.h>
 #include "render.h"
 #include "effects.h"
-PSP_MODULE_INFO("PSPGoTVScaleV1Auto",0x1000,1,24);
+PSP_MODULE_INFO("PSPGoTVScaleV1Auto",0x1000,1,25);
 extern void sctrlHENPatchSyscall(void *,void *);
 static const char *logpath;
 #include "logger.inc"
@@ -57,6 +57,21 @@ static GeWorkspace *gpu_workspace;
 static ScalePacket *packet;
 static PspGeContext *ge_context;
 static volatile int pending_list=-1;
+static int finish_callback=-1;
+static unsigned finish_sequence;
+static volatile unsigned finish_expected,finish_seen;
+static unsigned finish_confirmed;
+static void GeFinish(int token,void *argument){
+ (void)argument;
+ // GE interrupt context: no I/O, allocation, waiting or driver calls.
+ if((unsigned)token==finish_expected&&finish_expected)finish_seen=(unsigned)token;
+}
+static void InitFinishCallback(void){
+ if(finish_callback>=0)return;
+ PspGeCallbackData callbacks={NULL,NULL,GeFinish,NULL};
+ finish_callback=sceGeSetCallback(&callbacks);
+ logline("finish_callback,id,%d\n",finish_callback);
+}
 static int list_invalid_logged,list_paused_logged;
 static unsigned draws,timeouts,invalid_frames,paused_lists;
 static uint64_t wait_total;
@@ -261,7 +276,7 @@ static int FrameHook(int pri,void *ptr,int stride,int format,int sync) {
   if(pri==0) {
     Frame proposed={(uintptr_t)ptr,stride,format,0};
     if(!reserved||!ptr||ValidOutputFrame(proposed))Capture(&original0,ptr,stride,format);
-    if((ScalingVisible()||(MenuScalingVisible()&&ptr))&&ready_buffer){ptr=ready_buffer;stride=TV_STRIDE;format=0;}
+    if((ScalingVisible()||MenuScalingVisible())&&ready_buffer){ptr=ready_buffer;stride=TV_STRIDE;format=0;}
   }
   return real_frame(pri,ptr,stride,format,sync);
 }
@@ -338,6 +353,15 @@ static void RemoveHooks(void) {
 static int WaitList(unsigned timeout_us) {
   unsigned start=sceKernelGetSystemTimeLow();
   for(;;) {
+    // Finish callbacks run synchronously in the GE interrupt handler. On
+    // this single CPU the worker cannot observe the flag until that handler
+    // has also restored the saved GE context and returned. No global idle
+    // wait is needed for a positively identified completed packet.
+    int complete_intr=sceKernelCpuSuspendIntr();
+    int completed=finish_callback>=0&&finish_expected&&finish_seen==finish_expected;
+    if(completed){pending_list=-1;++finish_confirmed;}
+    sceKernelCpuResumeIntr(complete_intr);
+    if(completed)return 0;
     if(reboot_exit&&reboot_late)return -1;
     int status=sceGeListSync(pending_list,1);
     if(status==PSP_GE_LIST_DONE){
@@ -378,6 +402,10 @@ static int RenderWithFilter(Frame f,unsigned target,int selected_filter) {
   if(manual_native||UtilityVisible())return -2; // utility renderer may reset the shared GE queue
   if(!packet||!ge_context)return -1;
   if(BuildFilteredScalePacket(packet,f,target,aspect,selected_filter)<0){++invalid_frames;return -1;}
+  unsigned token=(++finish_sequence)&0xffffu;
+  if(!token)token=(++finish_sequence)&0xffffu;
+  finish_seen=0;finish_expected=token;
+  if(finish_callback>=0)packet->commands[packet->count-2]=0x0f000000u|token;
   sceKernelDcacheWritebackRange(packet,sizeof(*packet));
   PspGeListArgs args={sizeof(args),ge_context,0,NULL};
   list_invalid_logged=list_paused_logged=0;
@@ -385,7 +413,7 @@ static int RenderWithFilter(Frame f,unsigned target,int selected_filter) {
   // The original enqueue supports nested interrupt guards.
   int intr=sceKernelCpuSuspendIntr();
   if(manual_native||UtilityVisible()||!running||reboot_exit){sceKernelCpuResumeIntr(intr);return -2;}
-  pending_list=sceGeListEnQueue(packet->commands,NULL,-1,&args);
+  pending_list=sceGeListEnQueue(packet->commands,NULL,finish_callback,&args);
   sceKernelCpuResumeIntr(intr);
   if(pending_list<0){logline("enqueue_error,0x%08X\n",(unsigned)pending_list);return -1;}
   unsigned start=sceKernelGetSystemTimeLow();
@@ -396,7 +424,7 @@ static int RenderWithFilter(Frame f,unsigned target,int selected_filter) {
     // Discard the uncertain frame, not the last known-good scanout. A game
     // can retire an ID before our polling thread observes DONE; that alone
     // is not a HOME/utility transition. Storage is still fenced by WaitList.
-    if(MenuVisible()){
+    if(UtilityVisible()){
       active=0;home_paused=reserved;home_scaled_ready=0;home_output_restored=0;
       next_auto=sceKernelGetSystemTimeLow()+300000u;
     }
@@ -650,7 +678,7 @@ static void LogMenuLayers(void) {
   }
 }
 static void Report(void) {
-  logline("logger_stats,dropped,%u,write_errors,%u\n",log_dropped,log_write_errors);
+  logline("logger_stats,dropped,%u,write_errors,%u,finish_confirmed,%u\n",log_dropped,log_write_errors,finish_confirmed);
   Frame f=Snapshot(&source);
   logline("stats,ms,%u,active,%u,aspect,%u,presents,%u,draws,%u,queue_gpu_wait_avg_us,%u,max_wait_us,%u,timeouts,%u,invalid_frames,%u,paused_lists,%u,pending,%d,diagnostic_native,%u,source,0x%08X,stride,%d,format,%d\n",
           sceKernelGetSystemTimeLow()/1000,active,aspect,presentations,draws,
@@ -663,11 +691,12 @@ static int MainThread(SceSize argc,void *argv) {
   for(unsigned i=0;i<2;++i){SceUID fd=sceIoOpen(paths[i],PSP_O_WRONLY|PSP_O_CREAT|PSP_O_TRUNC,0666);if(fd>=0){logpath=paths[i];sceIoClose(fd);break;}}
   if(!logpath)return 0;
   unsigned fw=sceKernelDevkitVersion();
-  logline("PSPGoTVScale,base,alpha1,variant,simple_r24,model,%d,devkit,0x%08X\n",sceKernelGetModel(),fw);
+  logline("PSPGoTVScale,base,alpha1,variant,simple_r25,model,%d,devkit,0x%08X\n",sceKernelGetModel(),fw);
   if(sceKernelGetModel()!=4||(fw!=0x06060010&&fw!=0x06060110)){logline("unsupported_model_or_firmware\n");FlushLogs(LOG_QUEUE_CAPACITY);return 0;}
   filter_mode=FILTER_SOFT;logline("filter,%s\n",FilterName(filter_mode));
   if(InitGeMemory()<0){FlushLogs(LOG_QUEUE_CAPACITY);return 0;}
   if(InstallHooks()<0){FreeGeMemory();FlushLogs(LOG_QUEUE_CAPACITY);return 0;}
+  InitFinishCallback();
   ResolveHomeStatus();ResolveUtilityStatus();ResolveInput();ResolveScanoutProbe();
   logline("ready_default_scaled,filter_shortcut,L_R_Triangle,home_status,%u,utility_status,%u\n",home_status!=NULL,utility_type!=NULL&&utility_status!=NULL);
   unsigned last_report=sceKernelGetSystemTimeLow();
@@ -727,7 +756,10 @@ int module_stop(SceSize args,void *argp) {
   running=0;
   if(worker>=0){sceKernelWaitThreadEnd(worker,NULL);sceKernelDeleteThread(worker);worker=-1;}
   if(reserved&&Deactivate()<0)return -1;
-  RemoveHooks();if(FreeDepMemory()<0)return -1;return FreeGeMemory();
+  RemoveHooks();
+  if(finish_callback>=0){sceGeUnsetCallback(finish_callback);finish_callback=-1;}
+  if(FreeDepMemory()<0)return -1;
+  return FreeGeMemory();
 }
 
 /* Early reboot quiesces this worker before user buffers/GE state are replaced.
