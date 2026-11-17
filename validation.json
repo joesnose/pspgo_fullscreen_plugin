@@ -1,18 +1,28 @@
 {
-  "name": "PSP Go Fullscreen Plugin multi-profile test",
-  "revision": 19,
-  "baseline": "R18 native/fullscreen toggle confirmed working on user device; end-of-level save still crashes",
-  "profiles": {
-    "0": "BASELINE: no new context/idle guard",
-    "1": "GUARD: default, drain owned scaler list before user context APIs",
-    "2": "IDLE: enqueue only when GE queue idle",
-    "3": "BOTH: context guard plus idle submission"
-  },
-  "shortcut": "L+R+Circle; profiles reset to GUARD at game startup",
+  "name": "PSP Go Fullscreen Plugin queued logging test",
+  "revision": 20,
+  "change": "Fixed nonblocking producer log queue; only worker performs log file I/O",
+  "baseline": "R19 IDLE and BOTH still freeze at same save; retain all profile/render/save controls",
   "psp_build": "passed -Wall -Wextra -Werror",
   "hardware_tested": false,
-  "host_tests": "ASan/UBSan actual-source suite passes: profile edges, preserved context pointer/K1/result, bounded paused-list wait, worker retirement, immediate Break, final atomic enqueue check, idle busy skip and previous R18 regressions",
-  "firmware_exports_verified": "Go 6.61 sceGe_user SaveContext438A385A RestoreContext0BF608FB BreakB448EC0D",
-  "limitation": "Crash cause remains unconfirmed; rate-limited trace can miss individual operations; idle profile may reduce output update rate",
-  "retained": "native_output.inc byte-identical to R18; existing automatic load/HOME controls and filters retained"
+  "host_tests": "ASan/UBSan production logger tests and actual-source scaler regressions pass",
+  "logger_checks": [
+    "producer never opens/writes/closes files",
+    "flush refuses wrong thread, interrupt context or disabled interrupts",
+    "bounded FIFO, wrap/full drop and re-entry during I/O",
+    "failed open retains queue; partial writes complete; error write ends batch",
+    "record truncation stays within fixed bounds"
+  ],
+  "unchanged_from_r19": [
+    "native_output.inc",
+    "render.c",
+    "render.h",
+    "effects.c",
+    "effects.h",
+    "write_guard.inc",
+    "ge_api_guard.inc",
+    "scanout_probe.inc"
+  ],
+  "device_test": "Select BOTH with two L+R+Circle taps from default GUARD, reproduce same ending and collect log before next game launch",
+  "limitation": "Queued messages can be lost on abrupt freeze; this is not a confirmed crash fix"
 }

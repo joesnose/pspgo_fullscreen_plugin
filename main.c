@@ -18,7 +18,7 @@
 #include <stddef.h>
 #include "render.h"
 #include "effects.h"
-PSP_MODULE_INFO("PSPGoTVScaleV1Auto",0x1000,1,19);
+PSP_MODULE_INFO("PSPGoTVScaleV1Auto",0x1000,1,20);
 extern void sctrlHENPatchSyscall(void *,void *);
 static const char *logpath;
 #include "logger.inc"
@@ -714,6 +714,7 @@ static void LogMenuLayers(void) {
   }
 }
 static void Report(void) {
+  logline("logger_stats,dropped,%u,write_errors,%u\n",log_dropped,log_write_errors);
   Frame f=Snapshot(&source);
   logline("test_stats,profile,%s,idle_skips,%u,save_context_calls,%u,restore_context_calls,%u,break_calls,%u\n",TestProfileName(test_profile),idle_skips,ge_api_calls[0],ge_api_calls[1],ge_api_calls[2]);
   logline("stats,ms,%u,active,%u,aspect,%u,presents,%u,draws,%u,queue_gpu_wait_avg_us,%u,max_wait_us,%u,timeouts,%u,invalid_frames,%u,paused_lists,%u,pending,%d,diagnostic_native,%u,source,0x%08X,stride,%d,format,%d\n",
@@ -722,21 +723,24 @@ static void Report(void) {
 }
 static int MainThread(SceSize argc,void *argv) {
   (void)argc;(void)argv;
+  log_worker=sceKernelGetThreadId();
   const char *paths[]={"ef0:/PSPGoTVScale.txt","ms0:/PSPGoTVScale.txt"};
   for(unsigned i=0;i<2;++i){SceUID fd=sceIoOpen(paths[i],PSP_O_WRONLY|PSP_O_CREAT|PSP_O_TRUNC,0666);if(fd>=0){logpath=paths[i];sceIoClose(fd);break;}}
   if(!logpath)return 0;
   unsigned fw=sceKernelDevkitVersion();
-  logline("PSPGoTVScale,base,alpha1,variant,auto_home_r19,model,%d,devkit,0x%08X\n",sceKernelGetModel(),fw);
-  if(sceKernelGetModel()!=4||(fw!=0x06060010&&fw!=0x06060110)){logline("unsupported_model_or_firmware\n");return 0;}
+  logline("PSPGoTVScale,base,alpha1,variant,auto_home_r20,model,%d,devkit,0x%08X\n",sceKernelGetModel(),fw);
+  if(sceKernelGetModel()!=4||(fw!=0x06060010&&fw!=0x06060110)){logline("unsupported_model_or_firmware\n");FlushLogs(LOG_QUEUE_CAPACITY);return 0;}
   logline("test_profile,id,%u,name,%s,shortcut,L_R_Circle\n",test_profile,TestProfileName(test_profile));
   filter_mode=FILTER_SOFT;logline("filter,%s\n",FilterName(filter_mode));
-  if(InitGeMemory()<0)return 0;
-  if(InstallHooks()<0){FreeGeMemory();return 0;}
+  if(InitGeMemory()<0){FlushLogs(LOG_QUEUE_CAPACITY);return 0;}
+  if(InstallHooks()<0){FreeGeMemory();FlushLogs(LOG_QUEUE_CAPACITY);return 0;}
   ResolveHomeStatus();ResolveUtilityStatus();ResolveInput();ResolveScanoutProbe();
   logline("ready_default_scaled,filter_shortcut,L_R_Triangle,home_status,%u,utility_status,%u\n",home_status!=NULL,utility_type!=NULL&&utility_status!=NULL);
   unsigned last_report=sceKernelGetSystemTimeLow();
   last_home_resolve=last_report;
+  logline("logger,queued,1,capacity,%u\n",LOG_QUEUE_CAPACITY);
   while(running) {
+    FlushLogs(8);
     unsigned now=sceKernelGetSystemTimeLow();
     PollScanoutProbe(now);
     UpdateSaveGate(now);
@@ -772,9 +776,9 @@ static int MainThread(SceSize argc,void *argv) {
     // Worker never spins while waiting for input or the next output frame.
     if(active||MenuScalingVisible())sceDisplayWaitVblankStart();else sceKernelDelayThread(10000);
   }
-  if(reboot_exit){CleanupBeforeReboot();return 0;}
+  if(reboot_exit){CleanupBeforeReboot();if(!reboot_late)FlushLogs(LOG_QUEUE_CAPACITY);return 0;}
   if(pending_list<0)Deactivate();
-  Report();worker_done=1;return 0;
+  Report();FlushLogs(LOG_QUEUE_CAPACITY);worker_done=1;return 0;
 }
 int module_start(SceSize args,void *argp) {
   (void)args;(void)argp;

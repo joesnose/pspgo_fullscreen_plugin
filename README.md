@@ -1,10 +1,32 @@
-# PSP Go Fullscreen Plugin — R19 test build
+# PSP Go Fullscreen Plugin — R20 logging test build
 
-[Download R19 test build and source](pspgo-tv-scale-v1-auto-home-r19.zip) · [Plugin PRX](PSPGoTVScale.prx)
+[Download R20 test build and source](pspgo-tv-scale-v1-auto-home-r20.zip) · [Plugin PRX](PSPGoTVScale.prx)
 
 Immediate fullscreen TV scaling for PSP Go. Soft is the default; opicker is not required.
-The R18 native/fullscreen display handoff is retained unchanged. Its toggle worked
-on the user's PSP Go; the end-of-level Burnout Legends save still crashed.
+R20 changes logging only: hooks queue messages in fixed kernel memory, and the
+worker writes them to disk. Scaling, GPU/save guards, test profiles, filters and
+the working R18 display handoff are retained from R19.
+
+## R20 test
+
+Fully restart after replacing the PRX. Select BOTH (hold L+R and tap Circle twice
+after game startup), matching the previous failing test, then repeat the same
+level ending. Copy ef0:/PSPGoTVScale.txt before launching the game again.
+
+The fixed queue holds 32 records of up to 511 bytes (about 16 KiB of kernel BSS).
+Producers do not open/write/close files, allocate memory or wait for a free slot.
+They copy a formatted message under a short interrupt guard; a full queue drops
+new messages. Only the worker drains the queue, outside interrupt context with
+interrupts enabled. It opens once per batch and writes up to eight records per
+loop. Failed opens retain queued records; partial writes are completed, while
+zero/error returns stop that batch. logger_stats reports dropped records and
+write errors. Early normal worker exits flush queued messages; late reboot skips
+flushing after driver teardown starts.
+
+This removes synchronous hook logging as a possible source of blocking or lock
+conflicts. It does not prove that logging caused the save-time crash. Queued
+messages may be lost if the PSP freezes before the worker can write them, so the
+last disk record is not necessarily the last event that occurred.
 
 ## Several tests in one PRX
 
@@ -30,14 +52,14 @@ GUARD each game startup. Do not change profiles during a save/load operation.
 The idle check may reduce update frequency under heavy GPU load; this is an
 experimental comparison. None of these modes is a confirmed device crash fix.
 
-## Why these tests
+## Existing R19 test profiles
 
 The R18 log records successful toggles: native DMA width returns to 480 with a
 512-pixel stride, and scaler resources are released. The later crash occurs
 before a new savedata-init or file-write entry appears. There are zero recorded
 list timeouts. This does not establish a RAM shortage or pinpoint the fault.
 
-Firmware GE context save/restore requires GE idle. R19 tests whether concurrent
+Firmware GE context save/restore requires GE idle. The existing guard tests whether concurrent
 scaler submissions interfere with the game's own context operations. The guard
 suppresses new submissions atomically with enqueue, while the existing worker
 retires its own list. It never cancels the game's work, modifies context buffers,
@@ -83,4 +105,16 @@ and busy idle-only skipping without changing the visible frame or faulting.
 Prior native handoff, utility/load, HOME, memory, paused-GE and input tests pass.
 The user GE NIDs were verified against the Go 6.61 driver export table; Sony
 firmware binaries are not distributed. No guessed register writes are added.
-R19 has not been tested on physical PSP hardware.
+R20 has not been tested on physical PSP hardware. The user's R19 IDLE and BOTH
+runs still froze at the same level-ending save.
+
+Queued logger regression:
+
+    cc -O1 -g -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined logger_test.c -o /tmp/go-tv-logger-test
+    /tmp/go-tv-logger-test
+
+The production logger tests verify no producer file I/O, worker/interrupt guards,
+FIFO order with producer re-entry during writes, queue wrap/full drops, bounded
+batches, failed opens, partial/error writes and truncation. Existing actual-source
+scaler regressions also pass. Render/effects, native handoff, scanout probe,
+file-write guard and GE-API guard files are byte-identical to R19.
