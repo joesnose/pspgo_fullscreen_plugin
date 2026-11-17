@@ -18,7 +18,7 @@
 #include <stddef.h>
 #include "render.h"
 #include "effects.h"
-PSP_MODULE_INFO("PSPGoTVScaleV1Auto",0x1000,1,16);
+PSP_MODULE_INFO("PSPGoTVScaleV1Auto",0x1000,1,17);
 extern void sctrlHENPatchSyscall(void *,void *);
 static const char *logpath;
 #include "logger.inc"
@@ -138,6 +138,7 @@ static void ResolveInput(void) {
   if(!owner||!(owner->attribute&0x1000)||target<owner->text_addr||target-owner->text_addr>=owner->text_size)return;
   merged_peek=(PadFn)(uintptr_t)target;
 }
+static void ProbeScanout(const char *);
 static void PollFilter(int menu,unsigned now) {
   SceCtrlData pad;memset(&pad,0,sizeof(pad));
   int ret=merged_peek?merged_peek(&pad,1):sceCtrlPeekBufferPositive(&pad,1);
@@ -146,8 +147,13 @@ static void PollFilter(int menu,unsigned now) {
   int square=(pad.Buttons&PSP_CTRL_SQUARE)!=0;
   unsigned chord=PSP_CTRL_LTRIGGER|PSP_CTRL_RTRIGGER;
   if(!menu&&!reboot_exit&&pending_list<0&&square&&!square_down&&(pad.Buttons&chord)==chord){
-    manual_native=!manual_native;manual_native_ready=0;next_auto=now;
-    logline("diagnostic_native_requested,%u\n",manual_native);
+    if(manual_native){
+      ProbeScanout("resume_request_blocked");
+      logline("probe_resume_blocked,native_retained,1\n");
+    } else {
+      manual_native=1;manual_native_ready=0;next_auto=now;
+      logline("diagnostic_native_requested,1\n");
+    }
   }
   square_down=square;
   if(!square&&!menu&&!reboot_exit&&pending_list<0&&triangle&&!triangle_down&&(pad.Buttons&chord)==chord) {
@@ -244,6 +250,7 @@ static int TvActive(void) {
   unsigned x=Read(0x1c);
   return (Read(0)&3)==3&&Read(0x2c)==480&&x>=1800&&x<=2200;
 }
+#include "scanout_probe.inc"
 static Frame Snapshot(volatile Frame *from) {
   int intr=sceKernelCpuSuspendIntr();Frame f=*from;sceKernelCpuResumeIntr(intr);return f;
 }
@@ -483,6 +490,7 @@ static int Activate(void) {
   Capture(&source,ptr,stride,format);Frame f=Snapshot(&source);
   if(!ValidFrame(f)){logline("activation_rejected,source,0x%08X,stride,%d,format,%d\n",f.address,f.stride,f.format);return -1;}
   get_frame(0,&ptr,&stride,&format,0);Capture(&original0,ptr,stride,format);
+  ProbeScanout("cold_native");
   if(InitGeMemory()<0)return -1;
   int ret=-1,intr=sceKernelCpuSuspendIntr();
   if(sceGeDrawSync(1)==PSP_GE_LIST_DONE){reserved=1;ret=set_size(0x400000);}
@@ -500,6 +508,7 @@ static int Activate(void) {
   ret=real_mode(0xd2,720,480);
   if(ret>=0&&!MenuVisible())ret=real_frame(0,ready_buffer,TV_STRIDE,0,1);
   if(ret<0){logline("activation_mode_error,0x%08X\n",(unsigned)ret);Deactivate();return -1;}
+  ArmScanoutProbe();
   logline("enabled,source,0x%08X,stride,%d,format,%d,aspect,%d\n",f.address,f.stride,f.format,aspect);
   return 0;
 }
@@ -528,6 +537,7 @@ static int PauseForHome(void) {
     // Keep the workspace reserved; neither enqueue jobs nor shrink EDRAM.
     ret=real_mode(restore_mode,480,272);if(ret<0)return ret;
     utility_native_ready=1;home_scaled_ready=0;
+    ProbeScanout("utility_pause");
     logline("utility_native_output,mode,0x%X,width,480,height,272\n",restore_mode);
   }
   home_output_restored=1;
@@ -598,7 +608,7 @@ static int ResumeAfterHome(void) {
   int ret=real_mode(0xd2,720,480);
   if(ret>=0&&!MenuVisible())ret=real_frame(0,ready_buffer,TV_STRIDE,0,1);
   if(ret<0){active=0;home_paused=1;return -1;}
-  output_index=target;logline("system_dialog_closed,scaling_resumed\n");return 0;
+  output_index=target;ArmScanoutProbe();logline("system_dialog_closed,scaling_resumed\n");return 0;
 }
 static void AutoControl(int menu,unsigned now) {
   if(auto_fault)return;
@@ -684,17 +694,18 @@ static int MainThread(SceSize argc,void *argv) {
   for(unsigned i=0;i<2;++i){SceUID fd=sceIoOpen(paths[i],PSP_O_WRONLY|PSP_O_CREAT|PSP_O_TRUNC,0666);if(fd>=0){logpath=paths[i];sceIoClose(fd);break;}}
   if(!logpath)return 0;
   unsigned fw=sceKernelDevkitVersion();
-  logline("PSPGoTVScale,base,alpha1,variant,auto_home_r16,model,%d,devkit,0x%08X\n",sceKernelGetModel(),fw);
+  logline("PSPGoTVScale,base,alpha1,variant,auto_home_r17,model,%d,devkit,0x%08X\n",sceKernelGetModel(),fw);
   if(sceKernelGetModel()!=4||(fw!=0x06060010&&fw!=0x06060110)){logline("unsupported_model_or_firmware\n");return 0;}
   filter_mode=FILTER_SOFT;logline("filter,%s\n",FilterName(filter_mode));
   if(InitGeMemory()<0)return 0;
   if(InstallHooks()<0){FreeGeMemory();return 0;}
-  ResolveHomeStatus();ResolveUtilityStatus();ResolveInput();
+  ResolveHomeStatus();ResolveUtilityStatus();ResolveInput();ResolveScanoutProbe();
   logline("ready_default_scaled,filter_shortcut,L_R_Triangle,home_status,%u,utility_status,%u\n",home_status!=NULL,utility_type!=NULL&&utility_status!=NULL);
   unsigned last_report=sceKernelGetSystemTimeLow();
   last_home_resolve=last_report;
   while(running) {
     unsigned now=sceKernelGetSystemTimeLow();
+    PollScanoutProbe(now);
     UpdateSaveGate(now);
     if(now-last_home_resolve>=500000u){ResolveHomeStatus();ResolveUtilityStatus();ResolveInput();last_home_resolve=now;}
     int menu=MenuVisible();

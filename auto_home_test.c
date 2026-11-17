@@ -25,7 +25,9 @@ static int frame_calls,mode_calls,sync_invalid,utility_during_render,sync_paused
 static Frame game_frame,layer_frame,display_frame;
 static int slot_driver,hold_vblank,native_mode_with_old_layer,inject_native_frames,intr_depth,immediate_rejections;
 static Frame slots[4][2],native_rebound[2];
-static unsigned ge_allocations,ge_releases;
+static unsigned ge_allocations,ge_releases,probe_word_reads;
+static int FakeProbeGe(int id){return id==19?(edram==0x400000?2:4):id==28?1:0;}
+static int FakeProbeDma(int *w,int *stride,int *fmt){*w=mode_v==0xd2?720:480;*stride=mode_v==0xd2?768:512;*fmt=mode_v==0xd2?1:0;return 0;}
 static unsigned user_block_bytes;
 static void *user_block;static int alloc_fail,bad_head,dep_only_fail;
 static int FakeStatus(void){return menu_bits;}
@@ -82,6 +84,7 @@ static int FakeAsync(SceUID fd,int64_t *result){assert(fd==write_fd&&result==asy
 static int FakeAsyncStat(SceUID fd,int poll,int64_t *result){assert(poll==1);return FakeAsync(fd,result);}
 static int FakeClose(SceUID fd){assert(fd==write_fd&&current_k1==0x100000);return close_result;}
 static void Reset(void){
+ probe_ge=FakeProbeGe;probe_cmd=NULL;probe_dma=FakeProbeDma;probe_active_pending=probe_manual_started=probe_bound_taken=probe_ui_pending=probe_ui_seen=0;probe_word_reads=0;
  assert(intr_depth==0);slot_driver=hold_vblank=native_mode_with_old_layer=inject_native_frames=immediate_rejections=0;native_wait_reason=NULL;
  manual_native=manual_native_ready=square_down=dep_only_fail=0;
  memset(async_writes,0,sizeof(async_writes));async_overflow=write_calls=0;
@@ -267,7 +270,11 @@ int main(void){
  menu_bits=0;game_frame=(Frame){0x04088000,512,3,0};
  FrameHook(0,NULL,0,3,1);assert(display_frame.address==0);
  pad_buttons=0;PollFilter(0,400);pad_buttons=square_chord;PollFilter(0,500);
- assert(!manual_native);AutoControl(0,500);
+ assert(manual_native);AutoControl(0,500);
+ assert(!active&&gpu_memory<0&&edram==0x200000&&enqueue_calls==diagnostic_jobs);
+ // The diagnostic build blocks user resumption after capturing its state.
+ // Exercise the underlying fresh-allocation path independently for regression.
+ manual_native=0;next_auto=500;AutoControl(0,500);
  assert(active&&mode_v==0xd2&&display_frame.stride==TV_STRIDE&&filter_mode==FILTER_SOFT);
  assert(gpu_memory>=0&&packet&&edram==0x400000&&enqueue_calls==diagnostic_jobs+1);
  // Fresh reactivation reallocates GPU storage; a now-unavailable optional
@@ -277,7 +284,16 @@ int main(void){
  assert(active&&reserved&&gpu_memory>=0&&dep_memory<0&&filter_mode==FILTER_SHARP);
  // Native suppression can also be selected before automatic activation.
  Reset();pad_buttons=square_chord;PollFilter(0,0);AutoControl(0,0);assert(!active&&!reserved&&enqueue_calls==0);
- pad_buttons=0;PollFilter(0,1);pad_buttons=square_chord;PollFilter(0,2);AutoControl(0,2);assert(active);
+ pad_buttons=0;PollFilter(0,1);pad_buttons=square_chord;PollFilter(0,2);AutoControl(0,2);assert(manual_native&&!active);
+ manual_native=0;AutoControl(0,2);assert(active);
+ // Hardware snapshots read only the five known display-DMA words, with
+ // no allocations, mode changes or GE submissions. Active capture waits 2 VB.
+ Reset();AutoControl(0,0);int probe_jobs=enqueue_calls,probe_modes=mode_calls;
+ unsigned probe_allocs=ge_allocations,prior_words=probe_word_reads;
+ ProbeScanout("host_probe");assert(probe_word_reads==prior_words+5);
+ assert(enqueue_calls==probe_jobs&&mode_calls==probe_modes&&ge_allocations==probe_allocs);
+ probe_word_reads=0;PollScanoutProbe(clock_us);assert(probe_word_reads==0);
+ clock_us+=33334;PollScanoutProbe(clock_us);assert(probe_word_reads==5&&!probe_active_pending);
  // Custom autosaves using direct synchronous writes have no utility status.
  Reset();AutoControl(0,0);current_k1=0x100000;save_worker_step=1;
  write_fd=5;write_data=(const void *)0x12345678;write_size=4096;write_result=2048;
@@ -406,7 +422,7 @@ int main(void){
  filter_mode=FILTER_DITHER;pad_buttons=0;PollFilter(0,109);alloc_fail=1;
  pad_buttons=chord;PollFilter(0,110);assert(filter_mode==FILTER_SHARP&&dep_memory<0);alloc_fail=0;
  assert(FreeGeMemory()==0);
- puts("R16 manual-handoff/load-rollback/direct-write/savedata-entry/paused-GE/utility dialog/HOME and GE user-memory checks passed: immediate default-on, TV/source gating, busy retry, fault latch, NODS native status, NULL/kernel output restoration, native menu RGBA5551 GPU scaling, reboot quiesce/scanout cleanup, preserved HOME canvas/stride/format, no HOME resize, automatic resume and in-flight HOME suppression.");
+ puts("R17 scanout-probe/manual-handoff/load-rollback/direct-write/savedata-entry/paused-GE/utility dialog/HOME and GE user-memory checks passed: immediate default-on, TV/source gating, busy retry, fault latch, NODS native status, NULL/kernel output restoration, native menu RGBA5551 GPU scaling, reboot quiesce/scanout cleanup, preserved HOME canvas/stride/format, no HOME resize, automatic resume and in-flight HOME suppression.");
 }
 unsigned TestRead(unsigned off){return off==0?3:off==0x1c?2160:off==0x2c?480:0;}
 int sceKernelCpuSuspendIntr(void){int old=intr_depth;intr_depth++;return old;}void sceKernelCpuResumeIntr(int n){assert(n<intr_depth);intr_depth=n;}
@@ -474,4 +490,14 @@ unsigned TestCodeWord(unsigned a){
   if(off==8)return 0x8c8266cc;
  }
  return a==0x88001000?0x0a000800:0;
+}
+
+unsigned TestHardwareWord(unsigned address){
+ assert(intr_depth>0&&address>=0xbc800100u&&address<=0xbc800110u&&!(address&3));
+ probe_word_reads++;
+ if(address==0xbc800100u)return mode_v==0xd2?0x04200000u:game_frame.address;
+ if(address==0xbc800104u)return mode_v==0xd2?1u:0u;
+ if(address==0xbc800108u)return mode_v==0xd2?720u:480u;
+ if(address==0xbc80010cu)return mode_v==0xd2?768u:512u;
+ return 1;
 }

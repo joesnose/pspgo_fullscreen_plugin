@@ -1,12 +1,12 @@
 {
-  "name": "PSP Go Fullscreen Plugin",
-  "revision": 16,
-  "baseline": "R13 automatic load/save/HOME restored; R14/R15 automatic handoff changes bypassed",
-  "change": "Fix manual native toggle to follow driver sync0 shared-layout restrictions; use sync1 for layout changes and vblank fence; manual-only RAM/VRAM teardown/reacquisition",
+  "name": "PSP Go Fullscreen Plugin diagnostic",
+  "revision": 17,
+  "baseline": "R16: native teardown completes but picture quarters and manual reactivation crashes",
+  "change": "Read-only scanout/GE/DMA baseline and working-utility versus manual-native snapshots; block manual reactivation in diagnostic build",
   "psp_build": "passed -Wall -Wextra -Werror",
   "hardware_tested": false,
-  "evidence": "R15 log: native_handoff_wait detach_layer, save handoff native_ready0 and timeout250991us. Firmware 0x2764..0x27A8 rejects immediate width/format mismatch with0x80000107.",
-  "baseline_verification": "PauseForHome, RenderHome, SavedataInitHook, ModeHook and write_guard.inc identical to R13; manual helper one call site and manual flag guard",
-  "host_tests": "ASan/UBSan actual-source tests pass with firmware-like shared layout metadata, immediate rejection reproduced, legal metadata-matched clear, queued overlay format change, retained R13 automatic-load allocation, fenced manual release/fresh allocation, plus prior lifecycle regressions",
-  "remaining": "Confirm ordinary load screen restored, then test manual off/on image. Original automatic save-time freeze not confirmed fixed."
+  "evidence": "R16 log shows native_handoff_complete edram2097152 reserved0 gpu_memory-1 dep_memory-1, then save runs and last line is fresh GPU memory allocation on attempted resume. Native software tuple512/format3 is insufficient to explain quartered image.",
+  "host_tests": "ASan/UBSan actual-source regressions pass: five raw-register whitelist, IRQ-protected snapshot reads, no mode/alloc/GE effects, settled capture after2VB, blocked hotkey reactivation and prior native/load/write/input tests",
+  "diagnostic_limitation": "Manual Square resume is intentionally blocked after turning scaling off; restart game for fullscreen. Original crash unresolved.",
+  "remaining": "Short device run: working load screen then one native toggle, collect hardware snapshots; no level replay required"
 }

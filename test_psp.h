@@ -27,6 +27,7 @@ typedef struct { unsigned short len,stubcount,vstubcount;const char *libname;voi
 #define PSP_CTRL_HOME 0x10000
 unsigned TestRead(unsigned);
 unsigned TestCodeWord(unsigned);
+unsigned TestHardwareWord(unsigned);
 SceUID sceKernelAllocPartitionMemory(SceUID,const char *,int,SceSize,void *);
 void *sceKernelGetBlockHeadAddr(SceUID);
 int sceKernelFreePartitionMemory(SceUID);

@@ -37,6 +37,7 @@ static int NativeLayersDetached(void){
 }
 static int RestoreManualNativeOutput(void){
  if(!manual_native)return -1; // never used for automatic save/load or HOME
+ if(!probe_manual_started){ProbeScanout("manual_before");probe_manual_started=1;}
  active=0;home_paused=1;home_scaled_ready=0;
  if(pending_list>=0)return NativeWait("owned_ge_list");
  if(!running||reboot_exit||reboot_late)return -1;
@@ -73,6 +74,7 @@ static int RestoreManualNativeOutput(void){
   fence=NativeFence(2);if(fence)return fence<0?-1:NativeWait("native_vblank");
   int mode=-1,w=0,h=0;
   if(get_mode(&mode,&w,&h)<0||mode!=restore_mode||w!=480||h!=272)return NativeWait("native_mode_verify");
+  if(!probe_bound_taken){ProbeScanout("manual_bound_before_release");probe_bound_taken=1;}
   // Verify references and idle state atomically with restoring the 2 MiB bank.
   intr=sceKernelCpuSuspendIntr();ret=1;
   if(NativeLayersDetached()&&sceGeDrawSync(1)==PSP_GE_LIST_DONE){
@@ -87,6 +89,7 @@ static int RestoreManualNativeOutput(void){
  // No current/queued scanout or GE list references the scaler's old memory.
  if(FreeDepMemory()<0||FreeGeMemory()<0)return NativeWait("workspace_release");
  home_output_restored=1;utility_native_ready=1;native_wait_reason=NULL;
+ ProbeScanout("manual_after_release");
  logline("native_handoff_complete,edram,%d,reserved,%u,gpu_memory,%d,dep_memory,%d\n",get_size(),reserved,gpu_memory,dep_memory);
  return 0;
 }
