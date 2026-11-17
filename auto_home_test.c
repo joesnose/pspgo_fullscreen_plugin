@@ -83,7 +83,7 @@ static int FakeFrame(int pri,void *p,int stride,int format,int sync){
 }
 static void Reset(void){
  finish_callback=-1;finish_sequence=finish_expected=finish_seen=finish_confirmed=finish_on_enqueue=0;
- notice_label=NULL;
+ last_scaled_valid=0;notice_label=NULL;
  probe_native_reference=0;freeze_geometry=lcd_force_scaled=0;desired_width=hardware_width=480;hardware_stride=512;hardware_format=3;
  probe_ge=FakeProbeGe;probe_cmd=NULL;probe_dma=FakeProbeDma;probe_active_pending=probe_manual_started=probe_bound_taken=probe_ui_pending=probe_ui_seen=0;probe_word_reads=0;
  assert(intr_depth==0);slot_driver=hold_vblank=native_mode_with_old_layer=inject_native_frames=immediate_rejections=0;native_wait_reason=NULL;
@@ -103,6 +103,16 @@ static void Reset(void){
  assert(!((uintptr_t)packet&63)&&!((uintptr_t)ge_context&63));
 }
 int main(void){
+ Reset();AutoControl(0,0);Frame fresh=Snapshot(&source);
+ int duplicate_jobs=enqueue_calls,duplicate_frames=frame_calls;
+ for(int repeat=0;repeat<60;repeat++)assert(UpdateGameOutput(fresh)==1);
+ assert(enqueue_calls==duplicate_jobs&&frame_calls==duplicate_frames);
+ fresh.serial++;assert(UpdateGameOutput(fresh)==0&&enqueue_calls==duplicate_jobs+1);
+ assert(UpdateGameOutput(fresh)==1&&enqueue_calls==duplicate_jobs+1);
+ // Filter changes invalidate the cached presentation even on a still frame.
+ pad_buttons=PSP_CTRL_LTRIGGER|PSP_CTRL_RTRIGGER|PSP_CTRL_TRIANGLE;PollFilter(0,clock_us);
+ assert(!last_scaled_valid&&UpdateGameOutput(fresh)==0&&enqueue_calls==duplicate_jobs+2);
+
  // A positively completed packet remains usable even if its ID is already
  // invalid and the game has started more work; no global idle is required.
  Reset();InitFinishCallback();AutoControl(0,0);unsigned good_draws=draws;
@@ -410,7 +420,7 @@ int main(void){
  filter_mode=FILTER_DITHER;pad_buttons=0;PollFilter(0,109);alloc_fail=1;
  pad_buttons=chord;PollFilter(0,110);assert(filter_mode==FILTER_SHARP&&dep_memory<0);alloc_fail=0;
  assert(FreeGeMemory()==0);
- puts("Simple R25 finish-confirmed frames and stable HOME plus automatic startup/filter cycle/native toggle/utility dialog/HOME/paused-GE and GE user-memory checks passed: immediate default-on, TV/source gating, busy retry, fault latch, NODS native status, NULL/kernel output restoration, native menu RGBA5551 GPU scaling, reboot quiesce/scanout cleanup, preserved HOME canvas/stride/format, no HOME resize, automatic resume and in-flight HOME suppression.");
+ puts("Simple R26 fresh-presentation scheduling plus finish-confirmed frames and stable HOME plus automatic startup/filter cycle/native toggle/utility dialog/HOME/paused-GE and GE user-memory checks passed: immediate default-on, TV/source gating, busy retry, fault latch, NODS native status, NULL/kernel output restoration, native menu RGBA5551 GPU scaling, reboot quiesce/scanout cleanup, preserved HOME canvas/stride/format, no HOME resize, automatic resume and in-flight HOME suppression.");
 }
 unsigned TestRead(unsigned off){return off==0?3:off==0x1c?(lcd_force_scaled?2160:slot_driver?(hardware_width==720?2160:2040):(mode_v==0xd2?2160:2040)):off==0x2c?480:0;}
 int sceKernelIsIntrContext(void){return 0;}

@@ -22,7 +22,7 @@ int main(void) {
         previous=b.x;
       }
       assert(previous==left+width);
-      assert(p.clear[0].x==0&&p.clear[1].x==720&&p.clear[1].y==480);
+      if(aspect)assert(p.clear[0].x==0&&p.clear[1].x==720&&p.clear[1].y==480);
       int fb=0,fmt=0,ctx=0;
       for(unsigned i=0;i<p.count;++i) {
         unsigned cmd=p.commands[i]>>24,arg=p.commands[i]&0xffffff;
@@ -30,7 +30,7 @@ int main(void) {
         if(cmd==0xc3){assert(arg==(unsigned)format);++fmt;}
         if(cmd==0x12){assert(arg&(1u<<23));++ctx;}
       }
-      assert(fb==1&&fmt==1&&ctx==2);++cases;
+      assert(fb==1&&fmt==1&&ctx==1+aspect);++cases;
     }
   Frame invalid[]={{0x04200000,512,3,0},{0x041f0000,512,3,0},
     {0x04000004,512,0,0},{0x04000000,480,0,0},{0x04000000,512,4,0},

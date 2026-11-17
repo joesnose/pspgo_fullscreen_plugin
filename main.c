@@ -18,7 +18,7 @@
 #include <stddef.h>
 #include "render.h"
 #include "effects.h"
-PSP_MODULE_INFO("PSPGoTVScaleV1Auto",0x1000,1,25);
+PSP_MODULE_INFO("PSPGoTVScaleV1Auto",0x1000,1,26);
 extern void sctrlHENPatchSyscall(void *,void *);
 static const char *logpath;
 #include "logger.inc"
@@ -45,6 +45,8 @@ static SceUID worker=-1;
 static volatile Frame source,original0;
 static volatile unsigned presentations;
 static void *ready_buffer;
+static Frame last_scaled_source;
+static int last_scaled_valid;
 /* GE cannot normally fetch kernel-partition buffers. All GPU-consumed
  * commands, vertices and saved-context lists belong to one user-RAM block. */
 typedef struct __attribute__((aligned(64))) {
@@ -166,7 +168,7 @@ static void PollFilter(int menu,unsigned now) {
   if(!manual_native&&!square&&!menu&&!reboot_exit&&pending_list<0&&triangle&&!triangle_down&&(pad.Buttons&chord)==chord) {
     int next=(filter_mode+1)%FILTER_COUNT;
     if(next==FILTER_DEPOSTERISE&&packet&&InitDepMemory()<0){logline("deposterise_memory_unavailable,skipped\n");next=FILTER_SHARP;}
-    filter_mode=next;
+    filter_mode=next;last_scaled_valid=0;
     if(next!=FILTER_DEPOSTERISE)FreeDepMemory();
     notice_label=FilterName(next);notice_started=now;notice_active=1;logline("filter,%s\n",FilterName(next));
   }
@@ -452,6 +454,18 @@ static int Render(Frame f,unsigned target){
   }
   return ret;
 }
+/* The game, not the TV worker cadence, determines whether a fresh frame exists.
+ * Duplicate source presentations need no additional GE/context/scanout work. */
+static int UpdateGameOutput(Frame f){
+ if(last_scaled_valid&&f.serial==last_scaled_source.serial&&f.address==last_scaled_source.address&&f.stride==last_scaled_source.stride&&f.format==last_scaled_source.format)return 1;
+ unsigned target=output_index^1;
+ int result=Render(f,target);if(result<0)return result;
+ if(!ScalingVisible())return -2;
+ ready_buffer=(void *)(0x04000000u+TV_VRAM_OFFSET+target*TV_FRAME_BYTES);
+ int published=real_frame(0,ready_buffer,TV_STRIDE,0,1);
+ if(published<0)return -1;
+ output_index=target;last_scaled_source=f;last_scaled_valid=1;return 0;
+}
 static int Deactivate(void) {
   if(pending_list>=0)return -1;
   active=0;
@@ -497,6 +511,7 @@ static int Activate(void) {
   int rendered=Render(f,0);
   if(rendered==-2){home_paused=reserved;home_output_restored=0;next_auto=sceKernelGetSystemTimeLow()+300000u;return 0;}
   if(rendered<0){if(pending_list<0)Deactivate();return -1;}
+  last_scaled_source=f;last_scaled_valid=1;
   ready_buffer=(void *)(0x04000000u+TV_VRAM_OFFSET);
   if(MenuVisible()){home_paused=1;home_output_restored=1;return 0;}
   active=1;
@@ -603,6 +618,7 @@ static int ResumeAfterHome(void) {
   int ret=real_mode(0xd2,720,480);
   if(ret>=0&&!MenuVisible())ret=real_frame(0,ready_buffer,TV_STRIDE,0,1);
   if(ret<0){active=0;home_paused=1;return -1;}
+  last_scaled_source=f;last_scaled_valid=1;
   output_index=target;ArmScanoutProbe();logline("system_dialog_closed,scaling_resumed\n");return 0;
 }
 static void AutoControl(int menu,unsigned now) {
@@ -691,7 +707,7 @@ static int MainThread(SceSize argc,void *argv) {
   for(unsigned i=0;i<2;++i){SceUID fd=sceIoOpen(paths[i],PSP_O_WRONLY|PSP_O_CREAT|PSP_O_TRUNC,0666);if(fd>=0){logpath=paths[i];sceIoClose(fd);break;}}
   if(!logpath)return 0;
   unsigned fw=sceKernelDevkitVersion();
-  logline("PSPGoTVScale,base,alpha1,variant,simple_r25,model,%d,devkit,0x%08X\n",sceKernelGetModel(),fw);
+  logline("PSPGoTVScale,base,alpha1,variant,simple_r26,model,%d,devkit,0x%08X\n",sceKernelGetModel(),fw);
   if(sceKernelGetModel()!=4||(fw!=0x06060010&&fw!=0x06060110)){logline("unsupported_model_or_firmware\n");FlushLogs(LOG_QUEUE_CAPACITY);return 0;}
   filter_mode=FILTER_SOFT;logline("filter,%s\n",FilterName(filter_mode));
   if(InitGeMemory()<0){FlushLogs(LOG_QUEUE_CAPACITY);return 0;}
@@ -726,11 +742,7 @@ static int MainThread(SceSize argc,void *argv) {
       Frame f=Snapshot(&source);
       if(f.address&&!ValidFrame(f)){++invalid_frames;abort_requested=1;continue;}
       if(f.address) {
-        unsigned target=output_index^1;
-        if(Render(f,target)>=0&&ScalingVisible()) {
-          ready_buffer=(void *)(0x04000000u+TV_VRAM_OFFSET+target*TV_FRAME_BYTES);
-          real_frame(0,ready_buffer,TV_STRIDE,0,1);output_index=target;
-        }
+        UpdateGameOutput(f);
       }
     }
     now=sceKernelGetSystemTimeLow();

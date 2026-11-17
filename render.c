@@ -30,11 +30,16 @@ int BuildFilteredScalePacket(ScalePacket *p,Frame s,unsigned output,int aspect,i
   Emit(p,0x15,0);Emit(p,0x16,end);Emit(p,0xd4,0);Emit(p,0xd5,end);
   Emit(p,0x9c,dest);Emit(p,0x9d,TV_STRIDE);Emit(p,0xd2,0); // RGB565 output.
   Emit(p,0xe8,0);Emit(p,0xe9,0);Emit(p,0xe7,1); // No channel masks; no Z writes.
+  // In stretched fullscreen the first opaque image pass overwrites every
+  // destination pixel. Clear only when pillarbox borders need black pixels.
+  if(aspect){
   p->clear[0]=(ClearVertex){0,0,0,0,0};
   p->clear[1]=(ClearVertex){0,720,480,0,0};
   Emit(p,0xd3,0x101); // Clear color only.
   Emit(p,0x12,(1u<<23)|(2<<7)|(7<<2));Address(p,1,p->clear);
-  Emit(p,4,(6<<16)|2);Emit(p,0xd3,0);
+  Emit(p,4,(6<<16)|2);
+  }
+  Emit(p,0xd3,0); // Always leave clear mode, even without a border clear.
   if(filter==FILTER_DITHER||filter==FILTER_SOFT_CRT) {
     // Ordered values -4..3, balanced around zero for RGB565 conversion.
     Emit(p,0xe2,0x2e0c);Emit(p,0xe3,0xf3d1);Emit(p,0xe4,0x0c2e);Emit(p,0xe5,0xd1f3);Emit(p,0x20,1);

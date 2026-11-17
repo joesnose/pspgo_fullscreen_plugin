@@ -1,9 +1,30 @@
-# PSP Go Fullscreen Plugin — Simple R25
+# PSP Go Fullscreen Plugin — Simple R26
 
-[Download Simple R25 build and source](PSPGoTVScale-simple-r25.zip) · [PRX](PSPGoTVScale.prx)
+[Download Simple R26 build and source](PSPGoTVScale-simple-r26.zip) · [PRX](PSPGoTVScale.prx)
 
 Automatic fullscreen TV scaling for PSP Go on ARK, 6.60/6.61, progressive
 component output. Starts enabled with Soft filtering. No INI is needed.
+
+## R26 GPU-work reduction
+
+The SMW R25 Soft log shows approximately 59 scaler draws per second while game
+presentations drop to about 30 per second; after scaling is disabled the game
+returns to about 58–60 presentations per second. There are no recorded timeouts.
+This indicates that scaling is contributing overhead and duplicating unchanged
+presentations, but does not identify every scheduling interaction.
+
+The worker now submits game scaling only when the captured presentation serial
+or framebuffer layout changes. Initial activation, HOME close and filter changes
+still redraw as needed. Scaled output remains selected between updates. This
+uses the display-present calls to identify fresh frames; continuously writing a
+front buffer without presenting is outside that scheduling assumption.
+
+The default stretched image covers every output pixel, so its redundant
+720x480 color clear is removed. The packet explicitly disables clear mode before
+the image pass. Pillarboxed output still clears borders. The first pass remains
+opaque and spans the complete scaled rectangle; no previous-frame blend is added.
+All filters, finish-confirmed frames and HOME stability handling are retained.
+Real PSP testing is required to quantify the speed improvement.
 
 ## R25 completion tracking and HOME stability
 
@@ -73,7 +94,7 @@ silent end-of-race save crash; the system save/load dialog fix is retained.
 
 Basic queued diagnostic logging remains at ef0:/PSPGoTVScale.txt (ms0:/ fallback).
 Hooks queue messages in fixed memory; the worker writes them outside interrupt
-context. The banner identifies simple_r25. No clocks, DDR unlocks, NODS binary
+context. The banner identifies simple_r26. No clocks, DDR unlocks, NODS binary
 changes or VSH volume work are included.
 
 ## Install
@@ -102,3 +123,5 @@ and queued logger safety. Host tests do not execute real PSP hardware.
 New actual-source checks repeatedly retire 50 list IDs without a menu and verify no output/mode handoff or unconfirmed-frame publication, then verify successful rendering resumes. Layer-clear substitution and genuine HOME clearing are also checked.
 
 R25 actual-source checks verify finish-confirmed invalid IDs under a busy global GE queue, mismatched-token rejection, unchanged idle fencing for unconfirmed work, stable scaled HOME across retired IDs and layer clears, and normal HOME close/resume.
+
+R26 host checks verify 60 duplicate source samples submit no extra GE/scanout work, a new serial submits one job, and a filter change forces a redraw. Packet/filter checks verify clears are omitted only for fullscreen and clear mode is explicitly disabled in every packet.

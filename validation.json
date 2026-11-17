@@ -1,6 +1,6 @@
 {
-  "variant": "Simple R25",
-  "revision": 25,
+  "variant": "Simple R26",
+  "revision": 26,
   "hardware_tested": false,
   "psp_build": "passed -Wall -Wextra -Werror",
   "host_tests": [
@@ -25,9 +25,9 @@
     "file-write hooks",
     "savedata-entry syscall hook"
   ],
-  "limitation": "system dialog fixes retained; separate Burnout silent autosave crash not claimed fixed",
-  "change": "Owned tokenized GE finish callback confirms completed frames despite retired IDs; keep scaled HOME selected during unconfirmed frames/clears",
-  "evidence": "R24 Soft log shows3029 retired-list events and1148 native pause messages with only one utility cycle",
-  "new_tests": "Completed-token invalid ID succeeds while global GE busy; mismatch rejected; unconfirmed work idle-fenced; scaled HOME holds during retirement and NULL clears; normal close restores original clear",
+  "limitation": "New scheduling assumes game presents framebuffer updates; speed increase requires hardware confirmation",
+  "change": "Scale new game presentations only; skip redundant fullscreen color clear; keep clear-mode reset and pillarbox clears",
+  "evidence": "SMW R25 Soft ~59 scaler draws/s with ~30 game presents/s, ~58\u201360 presents/s native, no recorded timeouts",
+  "new_tests": "60 unchanged presentations cause no jobs/scanout updates; new serial one job; filter change redraw;144 packet and192 filter checks verify conditional clear/reset",
   "callback_safety": "volatile matching-token store only in interrupt; no I/O/alloc/wait/GE calls"
 }

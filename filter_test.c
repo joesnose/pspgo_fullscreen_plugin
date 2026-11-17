@@ -17,14 +17,18 @@ int main(void){
    assert(a.y==0&&b.y==480&&a.u>=0.5f&&b.u<=479.5f&&a.v>=0.5f&&b.v<=271.5f);
    if(i)assert(fabsf(a.u-p.vertices[pass*30+i*2-1].u)<0.0001f);
   }
+  int clears=0,clear_off=0;
   int texdraws=0,scandraws=0,weights=0,filter=0;unsigned weight=0;
   for(unsigned i=0;i<p.count;++i){unsigned c=p.commands[i]>>24,v=p.commands[i]&0xffffff;
+   if(c==0xd3&&v==0x101)clears++;
+   if(c==0xd3&&v==0)clear_off++;
    if(c==4&&v==((6u<<16)|30u))texdraws++;
    if(c==4&&v==((6u<<16)|480u))scandraws++;
    if(c==0xc6){assert(v==(mode==FILTER_SHARP?0u:0x101u));filter++;}
    if(c==0xe0)weight=v;
    if(c==0xe1&&(mode==FILTER_BLUR||mode==FILTER_BLURRIER||mode==FILTER_SOFTER)){assert(weight+v==0xffffffu);weights++;} // constant image retains brightness
   }
+  assert(clears==aspect&&clear_off==1);
   assert(filter==1&&texdraws==passes&&scandraws==(mode==FILTER_CRT||mode==FILTER_SOFT_CRT)&&weights==(mode==FILTER_SOFTER?3:(mode==FILTER_BLUR||mode==FILTER_BLURRIER)?4:0));
   if(mode==FILTER_CRT)for(int i=0;i<240;++i){
    ClearVertex a=p.scanlines[i*2],b=p.scanlines[i*2+1];
