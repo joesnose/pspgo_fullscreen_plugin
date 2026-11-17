@@ -1,11 +1,18 @@
 {
-  "name": "PSP Go Fullscreen Plugin",
-  "revision": 18,
-  "baseline": "R17 diagnostic",
-  "change": "Request native geometry before source-layout transition; verify actual DMA and LCDC geometry before manual release/reactivation",
+  "name": "PSP Go Fullscreen Plugin multi-profile test",
+  "revision": 19,
+  "baseline": "R18 native/fullscreen toggle confirmed working on user device; end-of-level save still crashes",
+  "profiles": {
+    "0": "BASELINE: no new context/idle guard",
+    "1": "GUARD: default, drain owned scaler list before user context APIs",
+    "2": "IDLE: enqueue only when GE queue idle",
+    "3": "BOTH: context guard plus idle submission"
+  },
+  "shortcut": "L+R+Circle; profiles reset to GUARD at game startup",
   "psp_build": "passed -Wall -Wextra -Werror",
   "hardware_tested": false,
-  "evidence": "R17 log: software native480x272 while DMA width720/stride512 and LCDC x2160 persist; cold native DMA480/512 and LCDC x2040",
-  "host_tests": "ASan/UBSan actual-source regressions pass, including old-order mismatch reproducer, corrected ordering, stale-width and LCDC refusal, and prior load/HOME/GE/write/input checks",
-  "remaining": "Device off/on toggle and load-screen test; original automatic save-time crash remains unconfirmed"
+  "host_tests": "ASan/UBSan actual-source suite passes: profile edges, preserved context pointer/K1/result, bounded paused-list wait, worker retirement, immediate Break, final atomic enqueue check, idle busy skip and previous R18 regressions",
+  "firmware_exports_verified": "Go 6.61 sceGe_user SaveContext438A385A RestoreContext0BF608FB BreakB448EC0D",
+  "limitation": "Crash cause remains unconfirmed; rate-limited trace can miss individual operations; idle profile may reduce output update rate",
+  "retained": "native_output.inc byte-identical to R18; existing automatic load/HOME controls and filters retained"
 }

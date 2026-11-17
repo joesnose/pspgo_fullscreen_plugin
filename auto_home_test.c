@@ -100,7 +100,26 @@ static int FakeWrite(SceUID fd,const void *data,SceSize size){
 static int FakeAsync(SceUID fd,int64_t *result){assert(fd==write_fd&&result==async_result_pointer&&current_k1==0x100000);return async_result_code;}
 static int FakeAsyncStat(SceUID fd,int poll,int64_t *result){assert(poll==1);return FakeAsync(fd,result);}
 static int FakeClose(SceUID fd){assert(fd==write_fd&&current_k1==0x100000);return close_result;}
+static PspGeContext *context_parameter;
+static int context_calls,context_result,context_expected_pending,ge_worker_step,inject_ge_entry;
+static int break_mode;static void *break_argument;
+static int FakeContext(PspGeContext *context){
+ assert(context==context_parameter&&current_k1==0x100000&&intr_depth==0);
+ assert(pending_list==context_expected_pending);context_calls++;
+ if(reserved){
+  assert(ge_api_entries==1);
+  if(test_profile&1u){int jobs=enqueue_calls;assert(Render(game_frame,0)<0&&enqueue_calls==jobs);}
+ }
+ return context_result;
+}
+static int FakeBreak(int mode,void *argument){
+ assert(mode==break_mode&&argument==break_argument&&current_k1==0x100000&&intr_depth==0);
+ assert(ge_api_entries==1&&pending_list==context_expected_pending);context_calls++;return context_result;
+}
 static void Reset(void){
+ test_profile=1;idle_skips=ge_api_entries=circle_down=0;notice_label=NULL;
+ memset(ge_api_calls,0,sizeof(ge_api_calls));memset(ge_api_logged,0,sizeof(ge_api_logged));
+ ge_worker_step=inject_ge_entry=context_calls=0;real_ge_save=real_ge_restore=FakeContext;real_ge_break=FakeBreak;
  probe_native_reference=0;freeze_geometry=lcd_force_scaled=0;desired_width=hardware_width=480;hardware_stride=512;hardware_format=3;
  probe_ge=FakeProbeGe;probe_cmd=NULL;probe_dma=FakeProbeDma;probe_active_pending=probe_manual_started=probe_bound_taken=probe_ui_pending=probe_ui_seen=0;probe_word_reads=0;
  assert(intr_depth==0);slot_driver=hold_vblank=native_mode_with_old_layer=inject_native_frames=immediate_rejections=0;native_wait_reason=NULL;
@@ -124,6 +143,49 @@ static void Reset(void){
  assert(!((uintptr_t)packet&63)&&!((uintptr_t)ge_context&63));
 }
 int main(void){
+ // R19: user context operations drain only our list, suppress new submissions,
+ // preserve pointers/K1/results, and leave native/load handling untouched.
+ Reset();AutoControl(0,0);context_parameter=(PspGeContext *)0x12345678;
+ current_k1=0x100000;context_expected_pending=-1;context_result=-42;
+ assert(GeSaveHook(context_parameter)==-42&&context_calls==1&&!ge_api_entries&&current_k1==0x100000);
+ assert(active&&reserved&&edram==0x400000);
+ pending_list=7;ge_worker_step=1;context_result=0;
+ assert(GeRestoreHook(context_parameter)==0&&context_calls==2&&pending_list<0&&!ge_api_entries&&clock_us>0);
+ // A paused list cannot be cancelled or reused, even after the bounded wait.
+ pending_list=7;sync_paused=1;ge_worker_step=0;context_expected_pending=7;context_result=-3;
+ unsigned began=clock_us;ScalePacket ge_held=*packet;PspGeContext ctx_held=*ge_context;
+ assert(GeSaveHook(context_parameter)==-3&&clock_us-began==100000&&pending_list==7);
+ assert(!memcmp(packet,&ge_held,sizeof(ge_held))&&!memcmp(ge_context,&ctx_held,sizeof(ctx_held))&&!ge_api_entries);
+ // Break runs immediately with all arguments unchanged; never wait for it to
+ // unpause the very queue we're trying to drain.
+ break_mode=0;break_argument=(void *)0x87654321;began=clock_us;
+ assert(GeBreakHook(break_mode,break_argument)==-3&&clock_us==began&&pending_list==7);
+ break_mode=1;assert(GeBreakHook(break_mode,break_argument)==-3&&clock_us==began);
+ // Baseline and idle-only profiles add no context-drain delay.
+ test_profile=0;assert(GeSaveHook(context_parameter)==-3&&clock_us==began);
+ test_profile=2;assert(GeRestoreHook(context_parameter)==-3&&clock_us==began);
+ // Calls bypass the guard completely when the scaler has no reservation.
+ pending_list=-1;reserved=0;context_expected_pending=-1;
+ assert(GeSaveHook(context_parameter)==-3&&clock_us==began&&current_k1==0x100000);
+ // Idle-only profiles skip scaler jobs while the game's queue is busy,
+ // without faulting or changing the currently displayed output.
+ Reset();AutoControl(0,0);int prior_jobs=enqueue_calls;test_profile=2;ge_busy=1;
+ void *prior_output=ready_buffer;
+ assert(Render(game_frame,1)==-2&&enqueue_calls==prior_jobs&&idle_skips==1&&active&&ready_buffer==prior_output&&!auto_fault);
+ ge_busy=0;assert(Render(game_frame,1)==0&&enqueue_calls==prior_jobs+1);
+ test_profile=3;ge_busy=1;assert(Render(game_frame,1)==-2&&idle_skips==2);
+ // The final atomic gate also catches an entry after the early check/packet build.
+ Reset();AutoControl(0,0);prior_jobs=enqueue_calls;inject_ge_entry=1;
+ assert(Render(game_frame,1)==-2&&enqueue_calls==prior_jobs&&ge_api_entries==1);ge_api_entries=0;
+ // One Circle tap selects one profile; menu presses consume the edge.
+ Reset();unsigned test_chord=PSP_CTRL_LTRIGGER|PSP_CTRL_RTRIGGER|PSP_CTRL_CIRCLE;
+ for(unsigned expected=2;expected<=5;expected++){
+  pad_buttons=0;PollFilter(0,clock_us);pad_buttons=test_chord;PollFilter(0,clock_us);
+  assert(test_profile==(expected&3u)&&notice_label==TestProfileName(test_profile));
+  PollFilter(0,clock_us);assert(test_profile==(expected&3u));
+ }
+ pad_buttons=0;PollFilter(0,clock_us);pad_buttons=test_chord;PollFilter(1,clock_us);PollFilter(0,clock_us);assert(test_profile==1);
+
  Reset();AutoControl(0,0); // First ready sample activates immediately.
  assert(active&&reserved&&draws==1&&mode_v==0xd2&&w_v==720&&h_v==480&&display_frame.address==0x04200000);
  // NODS consumes Sony PS. Native HOME status alone stops substitution.
@@ -456,24 +518,25 @@ int main(void){
  filter_mode=FILTER_DITHER;pad_buttons=0;PollFilter(0,109);alloc_fail=1;
  pad_buttons=chord;PollFilter(0,110);assert(filter_mode==FILTER_SHARP&&dep_memory<0);alloc_fail=0;
  assert(FreeGeMemory()==0);
- puts("R18 mode-before-layout/scanout-probe/manual-handoff/load-rollback/direct-write/savedata-entry/paused-GE/utility dialog/HOME and GE user-memory checks passed: immediate default-on, TV/source gating, busy retry, fault latch, NODS native status, NULL/kernel output restoration, native menu RGBA5551 GPU scaling, reboot quiesce/scanout cleanup, preserved HOME canvas/stride/format, no HOME resize, automatic resume and in-flight HOME suppression.");
+ puts("R19 selectable profiles/context guard/atomic enqueue plus R18 mode-before-layout/scanout-probe/manual-handoff/load-rollback/direct-write/savedata-entry/paused-GE/utility dialog/HOME and GE user-memory checks passed: immediate default-on, TV/source gating, busy retry, fault latch, NODS native status, NULL/kernel output restoration, native menu RGBA5551 GPU scaling, reboot quiesce/scanout cleanup, preserved HOME canvas/stride/format, no HOME resize, automatic resume and in-flight HOME suppression.");
 }
 unsigned TestRead(unsigned off){return off==0?3:off==0x1c?(lcd_force_scaled?2160:slot_driver?(hardware_width==720?2160:2040):(mode_v==0xd2?2160:2040)):off==0x2c?480:0;}
 int sceKernelCpuSuspendIntr(void){int old=intr_depth;intr_depth++;return old;}void sceKernelCpuResumeIntr(int n){assert(n<intr_depth);intr_depth=n;}
 SceModule *sceKernelFindModuleByName(const char *n){if(input_fixture>=2&&!strcmp(n,"sceUtility_Driver"))return &utility_module;return input_fixture==1&&!strcmp(n,"sceImpose_Driver")?&input_module:NULL;}
 void sceKernelDcacheWritebackInvalidateAll(void){}void sceKernelIcacheInvalidateAll(void){}
-void sceKernelDcacheWritebackRange(const void *p,unsigned n){(void)p;(void)n;}
+void sceKernelDcacheWritebackRange(const void *p,unsigned n){(void)p;(void)n;if(inject_ge_entry){inject_ge_entry=0;ge_api_entries=1;}}
 void sceKernelDcacheWritebackInvalidateRange(const void *p,unsigned n){assert(p&&n);}
 unsigned pspSdkSetK1(unsigned n){unsigned old=current_k1;current_k1=n;return old;}
 unsigned sceKernelGetSystemTimeLow(void){return clock_us;}
 int sceKernelDelayThread(unsigned n){assert(intr_depth==0);unsigned previous=clock_us/16667u;clock_us+=n;
+ if(ge_worker_step&&ge_api_entries&&pending_list>=0){assert(Render(game_frame,0)<0);assert(WaitList(1000)==0);}
  if(slot_driver&&!hold_vblank&&clock_us/16667u!=previous){for(int i=0;i<4;i++)slots[i][0]=slots[i][1];FakeLayoutTick();}
  static int stepping;if(!stepping&&save_worker_step&&save_gate&&pending_list<0){stepping=1;AutoControl(MenuVisible(),clock_us);stepping=0;}return 0;}
 int sceGeListSync(int a,int b){(void)a;(void)b;if(open_during_render){menu_bits=0x100;open_during_render=0;}if(utility_during_render){utility_kind=1;utility_state=1;sync_invalid=1;utility_during_render=0;}
  return sync_paused?4:sync_invalid?(int)0x80000100u:PSP_GE_LIST_DONE;}
 int sceGeListDeQueue(int n){(void)n;return 0;}
 int sceGeListEnQueue(const void *p,void *s,int cb,PspGeListArgs *a){
- (void)s;(void)cb;assert(p==packet->commands&&a->context==ge_context);
+ (void)s;(void)cb;assert(intr_depth>0);assert(p==packet->commands&&a->context==ge_context);
  assert((uintptr_t)p>=0x08800000u&&(uintptr_t)p<0x0c000000u);
  assert((uintptr_t)packet->vertices>=0x08800000u&&(uintptr_t)packet->clear<0x0c000000u);
  assert((uintptr_t)packet->scanlines>=0x08800000u&&(uintptr_t)(packet->scanlines+480)<=0x0c000000u);
