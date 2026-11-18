@@ -1,33 +1,24 @@
 {
-  "variant": "Simple R28",
-  "revision": 28,
+  "variant": "Tidy R29",
+  "revision": 29,
+  "baseline": "uploaded fixed-v2 Soft build",
   "hardware_tested": false,
   "psp_build": "passed -Wall -Wextra -Werror",
   "host_tests": [
-    "actual-source startup/controls/HOME/utility/native/reboot regressions ASan/UBSan",
-    "144 GPU format/stride/aspect/buffer cases",
-    "192 filter cases, new offsets/weights and bounded packets",
-    "deposterise reference and queued logger regressions"
+    "actual-source control/HOME/native/event/GE regressions ASan/UBSan",
+    "cache writeback covers all active GPU arrays and excludes unused arrays",
+    "callback-enabled stuck list times out in1500us without blocking sync calls",
+    "rejected publication preserves previous pointer/index/source; accepted scaled publication queues forvblank; native sync unchanged",
+    "144 GPU packet cases and192 filter cases",
+    "unused packet arrays remain untouched",
+    "CPU deposterise and queued logger regressions"
   ],
-  "controls": [
-    "L+R+Triangle filters",
-    "L+R+Square fullscreen/native"
+  "changes": [
+    "complete active-range cache flush",
+    "bounded polling waits",
+    "vblank-scaled publication",
+    "metadata-only packet reset",
+    "canonical Soft test/unused guard removal/unique identifier"
   ],
-  "new_filters": {
-    "Softer": "4 bilinear samples at \u00b10.5 offsets",
-    "Blurrier": "5 samples, twice Blur sampling radius \u00b11.5"
-  },
-  "removed": [
-    "Circle profiles",
-    "Select memory modes",
-    "memory measurements",
-    "GE-context API hooks",
-    "file-write hooks",
-    "savedata-entry syscall hook"
-  ],
-  "limitation": "Hardware comparison needed; event wake and refresh pacing retained unchanged",
-  "change": "Only worker priority restored from0x30 to0x18 versus R27, excluding version identifiers",
-  "evidence": "R27 sustained30\u201332 scaled presentations/s vs mostly58\u201360 native; measured queue/wait~8.4ms",
-  "new_tests": "Sticky delivery/coalescing, timeout wake, same-refresh deferral, new-refresh processing, K1/nestedIRQ preservation and closed-event no-op",
-  "callback_safety": "volatile matching-token store only in interrupt; no I/O/alloc/wait/GE calls"
+  "limitations": "real hardware/cache/timing confirmation needed; no Burnout end-of-race crash fix claimed"
 }

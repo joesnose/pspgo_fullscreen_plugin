@@ -1,6 +1,5 @@
 #include "render.h"
 #include <stddef.h>
-#include <string.h>
 _Static_assert(sizeof(ScaleVertex)==16,"GE UV float/XYZ short vertex stride");
 _Static_assert(sizeof(ClearVertex)==12,"GE color/XYZ short vertex stride");
 int ValidFrame(Frame f) {
@@ -21,7 +20,8 @@ static void Address(ScalePacket *p,unsigned cmd,const void *ptr) {
 }
 int BuildFilteredScalePacket(ScalePacket *p,Frame s,unsigned output,int aspect,int filter) {
   if(!ValidFrame(s)||output>1||(aspect!=0&&aspect!=1)||filter<FILTER_SHARP||filter>=FILTER_COUNT)return -1;
-  memset(p,0,sizeof(*p));
+  // Initialise metadata; each referenced array is written explicitly below.
+  p->count=p->image_vertices=p->overlay_vertices=p->post_vertices=p->clear_vertices=0;
   unsigned dest=TV_VRAM_OFFSET+output*TV_FRAME_BYTES;
   const unsigned end=719|(479<<10);
   // An isolated 2D state; GE's per-list context restores the game's state.
@@ -33,6 +33,7 @@ int BuildFilteredScalePacket(ScalePacket *p,Frame s,unsigned output,int aspect,i
   // In stretched fullscreen the first opaque image pass overwrites every
   // destination pixel. Clear only when pillarbox borders need black pixels.
   if(aspect){
+  p->clear_vertices=2;
   p->clear[0]=(ClearVertex){0,0,0,0,0};
   p->clear[1]=(ClearVertex){0,720,480,0,0};
   Emit(p,0xd3,0x101); // Clear color only.
@@ -54,6 +55,7 @@ int BuildFilteredScalePacket(ScalePacket *p,Frame s,unsigned output,int aspect,i
   static const float dx[6]={0,-0.75f,0.75f,-0.75f,0.75f,0};
   static const float dy[6]={0,-0.75f,-0.75f,0.75f,0.75f,0};
   int passes=filter==FILTER_SOFTER?4:(filter==FILTER_BLUR||filter==FILTER_BLURRIER)?5:filter==FILTER_SHARPEN?6:1;
+  p->image_vertices=(unsigned)passes*30u;
   for(int pass=0;pass<passes;++pass) {
     float offset_x=dx[pass],offset_y=dy[pass];
     // Softer averages four bilinear samples; Blurrier doubles Blur's radius.
@@ -87,6 +89,7 @@ int BuildFilteredScalePacket(ScalePacket *p,Frame s,unsigned output,int aspect,i
     Emit(p,4,(6<<16)|30);
   }
   if(filter==FILTER_CRT||filter==FILTER_SOFT_CRT) {
+    p->overlay_vertices=480;
     unsigned tint=filter==FILTER_SOFT_CRT?0x20000000u:0x40000000u;
     for(int i=0;i<240;++i) {
       p->scanlines[i*2]=(ClearVertex){tint,left,i*2+1,0,0};
@@ -97,6 +100,7 @@ int BuildFilteredScalePacket(ScalePacket *p,Frame s,unsigned output,int aspect,i
     Emit(p,4,(6<<16)|480);
   }
   if(filter==FILTER_RGB_MASK) {
+    p->overlay_vertices=(unsigned)width*2u;
     static const unsigned tint[3]={0xffdfdfffu,0xffdfffdfu,0xffffdfdfu};
     for(int x=0;x<width;++x) {
       p->scanlines[x*2]=(ClearVertex){tint[x%3],left+x,0,0,0};
@@ -107,6 +111,7 @@ int BuildFilteredScalePacket(ScalePacket *p,Frame s,unsigned output,int aspect,i
     Emit(p,4,(6<<16)|(width*2));
   }
   if(filter==FILTER_POSTERISE) {
+    p->post_vertices=4;
     p->post[0]=(ClearVertex){0xffe0e0e0u,left,0,0,0};
     p->post[1]=(ClearVertex){0xffe0e0e0u,left+width,480,0,0};
     p->post[2]=(ClearVertex){0xff242424u,left,0,0,0};

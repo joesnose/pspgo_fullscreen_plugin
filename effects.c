@@ -32,12 +32,13 @@ int DeposteriseFrame(Frame f,unsigned *dst,unsigned stride){
  const unsigned char *src=(const unsigned char *)(phys|0x40000000u);
 #endif
  unsigned bytes=f.format==3?4:2;
+ unsigned char cached_line[480*4];
  for(unsigned y=0;y<272;y++){
-  const unsigned char *line=src+y*f.stride*bytes;
-  unsigned a=Pixel(line,0,f.format),b=a,c=Pixel(line,1,f.format);
+  memcpy(cached_line,src+y*f.stride*bytes,480*bytes);
+  unsigned a=Pixel(cached_line,0,f.format),b=a,c=Pixel(cached_line,1,f.format);
   for(unsigned x=0;x<480;x++){
    dst[y*stride+x]=SmoothBandPixel(a,b,c);a=b;b=c;
-   c=Pixel(line,x+2<480?x+2:479,f.format);
+   c=Pixel(cached_line,x+2<480?x+2:479,f.format);
   }
  }
  memcpy(rows[0],dst,480*4);memcpy(rows[1],dst,480*4);memcpy(rows[2],dst+stride,480*4);

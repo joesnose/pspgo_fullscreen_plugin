@@ -1,173 +1,62 @@
-# PSP Go Fullscreen Plugin — Simple R28
+# PSP Go Fullscreen Plugin — Tidy R29
 
-[Download Simple R28 build and source](PSPGoTVScale-simple-r28.zip) · [PRX](PSPGoTVScale.prx)
+[Download Tidy R29 build and source](PSPGoTVScale-tidy-r29.zip) · [PRX](PSPGoTVScale.prx)
 
-Automatic fullscreen TV scaling for PSP Go on ARK, 6.60/6.61, progressive
-component output. Starts enabled with Soft filtering. No INI is needed.
+Cleanup of the uploaded fixed-v2 Soft-default source. Starts scaled with Soft;
+L+R+Triangle cycles the same12 filters and L+R+Square switches scaling off/on.
+Native HOME, NODS controller integration, system save/load dialogs, GE finish
+confirmation and presentation-driven scheduling remain. This is not a claimed
+fix for Burnout's end-of-race crash; that investigation remains paused.
 
-## R28 controlled priority comparison
+## Corrections
 
-R28 changes only worker priority from R27's 0x30 back to 0x18, apart from version
-identifiers. Event wake-up, refresh pacing, renderer, filters, HOME/save-load
-handling and logging are unchanged. Compare the same SMW scene on Soft, then
-switch scaling off with L+R+Square and collect ef0:/PSPGoTVScale.txt before
-launching another game. Fully restart after replacing the PRX.
-
-The scheduler log should report worker_priority,24 (decimal 0x18). A positive
-event UID confirms the event-driven path is active. R27 showed sustained
-30–32 presentations/s versus mostly58–60 native in the user's run. Whether
-restoring priority improves this needs real hardware confirmation.
-
-## Retained R27 presentation-driven scheduling
-
-R26 improved SMW but its log still showed sustained 39–45 presentations/second
-in part of the run, with scaler draws following those presentations. R27 changes
-the worker schedule rather than adding a filter or a fixed frameskip setting.
-
-A successful game priority-2 display presentation signals one owned event flag.
-The hook only signals this nonblocking kernel event; it does not render, wait,
-allocate or perform file I/O. Signalling preserves caller K1/interrupt state.
-The worker waits on the sticky event with an approximately 16.7 ms timeout so
-input and HOME remain responsive when presentations stop. Several pending
-presents coalesce to the newest captured source rather than building a backlog.
-
-R27 changed worker priority from 0x18 to 0x30. R28 restores 0x18 for this comparison. This is not a CPU/GPU clock
-change. During gameplay the worker no longer unconditionally waits for vblank
-after every loop; it can start when a new presentation arrives. HOME retains
-its existing vblank-driven rendering path. The event is signalled on early stop
-and reboot so the worker can leave its wait promptly. Failed event creation
-falls back to the prior bounded vblank/idle wait path.
-
-A second source arriving during the same TV refresh is deferred, keeping at
-most one game-output publication per refresh. The latest source is retried;
-unchanged frames still submit no extra GPU work. No fixed alternate-frame skip
-is added, but overloaded/uncapped games can have intermediate presentations
-coalesced. The last confirmed image remains selected between updates.
-
-Controls, twelve filters, GE finish confirmation and native/save/HOME handling
-are retained. Hardware timing and speed improvement need a device test. The
-scheduler log reports event UID and priority24; a negative event UID indicates
-fallback mode.
-
-## R26 GPU-work reduction
-
-The SMW R25 Soft log shows approximately 59 scaler draws per second while game
-presentations drop to about 30 per second; after scaling is disabled the game
-returns to about 58–60 presentations per second. There are no recorded timeouts.
-This indicates that scaling is contributing overhead and duplicating unchanged
-presentations, but does not identify every scheduling interaction.
-
-The worker now submits game scaling only when the captured presentation serial
-or framebuffer layout changes. Initial activation, HOME close and filter changes
-still redraw as needed. Scaled output remains selected between updates. This
-uses the display-present calls to identify fresh frames; continuously writing a
-front buffer without presenting is outside that scheduling assumption.
-
-The default stretched image covers every output pixel, so its redundant
-720x480 color clear is removed. The packet explicitly disables clear mode before
-the image pass. Pillarboxed output still clears borders. The first pass remains
-opaque and spans the complete scaled rectangle; no previous-frame blend is added.
-All filters, finish-confirmed frames and HOME stability handling are retained.
-Real PSP testing is required to quantify the speed improvement.
-
-## R25 completion tracking and HOME stability
-
-R24's Assassin's Creed log confirms 3,029 retired-list events. R24 stopped
-showing the uncertain frames, but still lacked a way to recognize completed
-frames whose list IDs were already retired. It also repeatedly restored native
-HOME output on these events, causing menu flicker.
-
-R25 registers one owned GE finish callback. Each scaler list has a nonzero
-16-bit token in FINISH; the interrupt callback only copies a matching token to
-a volatile memory flag. No file I/O, allocation, waiting or GE calls run there.
-The worker can accept a positively identified completed frame even when the
-list ID is invalid and the game has started more GPU work. PSP's synchronous
-single-CPU finish interrupt also restores the list's saved context before the
-worker resumes; the worker observes the flag under an interrupt guard.
-
-Unconfirmed/reset work still requires the existing idle fence before reuse;
-paused-list storage remains retained. A failed callback registration logs a
-negative finish_callback ID and falls back to the existing polling behaviour.
-The callback is unregistered only after normal worker quiescence on unload;
-reboot leaves it resident with the protected workspace until firmware teardown.
-logger_stats now includes finish_confirmed, counting callback-confirmed waits.
-
-A retired ID during HOME no longer clears an already scaled menu or repeatedly
-restores the native menu. Native layer clears while a scaled HOME image is ready
-retain that image until a replacement or actual menu close. The original clear
-is still captured for close/resume. System utility dialogs keep their native
-ownership path. These changes need real-game performance and HOME verification.
-
-## Controls
-
-- Hold L+R and tap Triangle: next filter. Release Triangle between presses.
-- Hold L+R and tap Square: switch fullscreen scaling off/on.
-- HOME works normally, including NODS external-controller HOME.
-
-Default NODS equivalents use L1+R1 with Triangle or Square. Native HOME and
-system save/load dialogs yield to their own output; fullscreen resumes after
-closing them unless scaling was switched off manually. Selecting off restores
-native display/2 MiB EDRAM and frees scaler user-RAM buffers after safe fences.
+- Flush every active GPU-read packet range: commands, image vertices, optional
+  CRT/RGB overlays, posterise quads and pillarbox clear vertices. Unused ranges
+  are not flushed. CPU-only metadata is not a GPU input.
+- Keep WaitList bounded: all list-status calls poll; no blocking driver wait
+  can bypass the timeout. Each polling sleep is clamped to the remaining budget.
+  Timed-out drawing/paused work retains its storage until safely fenced.
+- Queue scaled output for vblank instead of flipping immediately. The display
+  hook uses vblank mode for substituted scaled layers too, so a caller cannot
+  accidentally force an immediate scaled flip. Native passthrough keeps the
+  caller's sync mode. The advertised output pointer changes only after the
+  driver accepts publication. Vblank queueing may add a refresh of latency.
+- Initialise only packet metadata and arrays actually used by the selected
+  effect, rather than memset the entire~21KiB packet each frame. Cache writeback
+  uses the active lengths. Image/filter operations still set their own state.
+- One canonical Soft-default control test, no unused ge_api_guard.inc, updated
+  comments and a distinct tidy_r29 banner/module1.29 identify this build.
 
 ## Filters
 
 Sharp → Soft → Softer → Blur → Blurrier → CRT → Soft CRT → RGB Mask → Sharpen →
-Posterise → Dither → Deposterise → Sharp.
+Posterise → Dither → Deposterise → Sharp. Softer/Blurrier and all other presets
+are retained. Deposterise remains an optional CPU effect with extra user RAM.
 
-Soft remains the default bilinear pass. Softer averages four bilinear samples
-at ±0.5 source-pixel diagonal offsets, broadening the smoothing footprint.
-Blur retains its five-sample average at ±0.75 offsets; Blurrier uses the same
-five passes at ±1.5, exactly twice the sampling radius. Perceived softness is
-image-dependent, so the two presets target stronger smoothing rather than a
-precise perceptual multiplier. Only the current frame is sampled; no temporal
-feedback is added. Softer/Blurrier cost more GPU work than Soft. Native HOME
-always uses Soft independently of the game filter.
+## Install/test
 
-All previous filters are retained. Deposterise uses an optional 544 KiB CPU
-buffer and can be slower; it is allocated only when that mode is selected.
-
-## Simplified scope
-
-Retains the working HOME rendering/reboot cleanup, native switch geometry
-verification, firmware utility save/load detection, automatic resume, and
-paused/retired GE-list handling. Experimental Circle profiles, Select memory
-controls, memory measurements, GE-context syscall hooks, direct file-write
-hooks and savedata-entry syscall hooks have been removed. Only the two requested
-button chords remain. This is not a claimed fix for Burnout Legends' separate
-silent end-of-race save crash; the system save/load dialog fix is retained.
-
-Basic queued diagnostic logging remains at ef0:/PSPGoTVScale.txt (ms0:/ fallback).
-Hooks queue messages in fixed memory; the worker writes them outside interrupt
-context. The banner identifies simple_r28. No clocks, DDR unlocks, NODS binary
-changes or VSH volume work are included.
-
-## Install
-
-Fully power off, replace ef0:/SEPLUGINS/PSPGoTVScale.prx, and restart. Keep one
-GAME plugin entry:
+Replace ef0:/SEPLUGINS/PSPGoTVScale.prx and fully restart. Keep one GAME entry:
 
     game, ef0:/SEPLUGINS/PSPGoTVScale.prx, on
 
-Check fullscreen startup, Triangle filter cycling, Square off/on, HOME cancel
-and game exit, and the game's normal system save/load dialog. Hardware behaviour
-of this exact combined build still needs confirmation.
+Confirm startup/filter Soft, gameplay, filter cycling (especially CRT/RGB Mask/
+Posterise), scaling off/on, HOME open/cancel/exit, and the normal save/load dialog.
+Log is ef0:/PSPGoTVScale.txt, with ms0:/ fallback; copy before relaunching another
+game. Hooks queue log messages; only the worker writes files. No new controls,
+clock changes or memory unlocks are introduced. Hardware performance/behaviour
+of this exact build still needs confirmation.
 
 ## Build and verification
 
     docker run --rm -v "$PWD":/src -w /src pspdev/pspdev:latest make -j4
 
-    cc -DHOST_TEST -D_GNU_SOURCE -O1 -g -std=c11 -Wall -Wextra -Werror -Wno-pointer-to-int-cast -Wno-int-to-pointer-cast -fsanitize=address,undefined auto_home_test.c render.c effects.c -o /tmp/simple-test
-    /tmp/simple-test
+    cc -DHOST_TEST -D_GNU_SOURCE -O1 -g -std=c11 -Wall -Wextra -Werror -Wno-pointer-to-int-cast -Wno-int-to-pointer-cast -fsanitize=address,undefined auto_home_test.c render.c effects.c -o /tmp/tidy-test
+    /tmp/tidy-test
 
-Strict PSP build and ASan/UBSan host checks pass: actual-source startup/controls,
-HOME/utility/native/reboot handling, 144 GPU format/stride/aspect/buffer cases,
-192 filter cases including new sample footprints/weights/UV bounds, CPU effects,
-and queued logger safety. Host tests do not execute real PSP hardware.
-
-New actual-source checks repeatedly retire 50 list IDs without a menu and verify no output/mode handoff or unconfirmed-frame publication, then verify successful rendering resumes. Layer-clear substitution and genuine HOME clearing are also checked.
-
-R25 actual-source checks verify finish-confirmed invalid IDs under a busy global GE queue, mismatched-token rejection, unchanged idle fencing for unconfirmed work, stable scaled HOME across retired IDs and layer clears, and normal HOME close/resume.
-
-R26 host checks verify 60 duplicate source samples submit no extra GE/scanout work, a new serial submits one job, and a filter change forces a redraw. Packet/filter checks verify clears are omitted only for fullscreen and clear mode is explicitly disabled in every packet.
-
-R27 actual-source host checks cover presentation-before-wait delivery, event coalescing, timeout input wake, same-refresh deferral followed by next-refresh processing, K1/nested-interrupt preservation and no signalling after event closure. These mock checks do not simulate real PSP scheduling priority or GPU timing.
+Strict PSP build and ASan/UBSan checks pass: actual-source startup/controls,
+HOME/utility/native/reboot/event handling, exact cache-writeback coverage at GE
+submission, callback-enabled stuck-list timeout and late-exit handling, rejected
+publication preserving previous output, queued scaled swaps and native sync
+passthrough. Also144 GPU packet cases,192 filter cases with active-range metadata,
+untouched unused-data checks, CPU effects and queued-logger checks pass. These
+host checks validate requested cache ranges, not physical GPU cache operation.

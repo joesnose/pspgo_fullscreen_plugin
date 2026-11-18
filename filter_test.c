@@ -7,10 +7,21 @@
 static ScalePacket p;
 int main(void){
  unsigned cases=0;
+ // Building Soft must leave unused arrays untouched, not sweep the whole cache.
+ memset(&p,0xa5,sizeof(p));
+ assert(BuildFilteredScalePacket(&p,(Frame){0x09400000,512,3,0},0,0,FILTER_SOFT)==0);
+ const unsigned char *unused=(const unsigned char *)p.scanlines;
+ for(unsigned i=0;i<sizeof(p.scanlines)+sizeof(p.post)+sizeof(p.clear);i++)assert(unused[i]==0xa5);
+ unused=(const unsigned char *)(p.vertices+30);
+ for(unsigned i=0;i<sizeof(p.vertices)-30*sizeof(*p.vertices);i++)assert(unused[i]==0xa5);
  for(int mode=0;mode<FILTER_COUNT;++mode)for(int fmt=0;fmt<4;++fmt)for(int aspect=0;aspect<2;++aspect)for(unsigned target=0;target<2;++target){
   assert(BuildFilteredScalePacket(&p,(Frame){0x09400000,512,fmt,0},target,aspect,mode)==0);
   assert(p.count<256&&p.commands[p.count-2]==0x0f000000&&p.commands[p.count-1]==0x0c000000);
   int passes=mode==FILTER_SOFTER?4:(mode==FILTER_BLUR||mode==FILTER_BLURRIER)?5:mode==FILTER_SHARPEN?6:1,width=aspect?540:720,left=(720-width)/2;
+  assert(p.image_vertices==(unsigned)passes*30u);
+  assert(p.clear_vertices==(unsigned)(aspect?2:0));
+  assert(p.overlay_vertices==(unsigned)(mode==FILTER_RGB_MASK?width*2:(mode==FILTER_CRT||mode==FILTER_SOFT_CRT)?480:0));
+  assert(p.post_vertices==(unsigned)(mode==FILTER_POSTERISE?4:0));
   for(int pass=0;pass<passes;++pass)for(int i=0;i<15;++i){
    ScaleVertex a=p.vertices[pass*30+i*2],b=p.vertices[pass*30+i*2+1];
    assert(a.x==left+i*width/15&&b.x==left+(i+1)*width/15);

@@ -18,7 +18,7 @@
 #include <stddef.h>
 #include "render.h"
 #include "effects.h"
-PSP_MODULE_INFO("PSPGoTVScaleV1Auto",0x1000,1,28);
+PSP_MODULE_INFO("PSPGoTVScaleV1Auto",0x1000,1,29);
 extern void sctrlHENPatchSyscall(void *,void *);
 static const char *logpath;
 #include "logger.inc"
@@ -290,7 +290,7 @@ static int FrameHook(int pri,void *ptr,int stride,int format,int sync) {
   if(pri==0) {
     Frame proposed={(uintptr_t)ptr,stride,format,0};
     if(!reserved||!ptr||ValidOutputFrame(proposed))Capture(&original0,ptr,stride,format);
-    if((ScalingVisible()||MenuScalingVisible())&&ready_buffer){ptr=ready_buffer;stride=TV_STRIDE;format=0;}
+    if((ScalingVisible()||MenuScalingVisible())&&ready_buffer){ptr=ready_buffer;stride=TV_STRIDE;format=0;sync=1;}
   }
   int result=real_frame(pri,ptr,stride,format,sync);
   if(pri==2&&result>=0&&running)NotifyWorker();
@@ -318,7 +318,7 @@ static int ModeHook(int mode,int width,int height) {
 static int GetModeHook(int *mode,int *width,int *height) {
   // Original validates caller pointers before any writes made here.
   int ret=get_mode(mode,width,height);
-  if(ret>=0&&reserved){if(mode)*mode=0;if(width)*width=480;if(height)*height=272;}
+  if(ret>=0&&reserved){if(mode)*mode=restore_mode;if(width)*width=480;if(height)*height=272;}
   return ret;
 }
 static int GetSizeHook(void){return reserved?0x200000:get_size();}
@@ -366,6 +366,10 @@ static void RemoveHooks(void) {
   mode_hook.address[0]=mode_hook.saved[0];mode_hook.address[1]=mode_hook.saved[1];
   CacheHooks();sceKernelCpuResumeIntr(intr);hooks_installed=0;
 }
+static void YieldForList(unsigned start,unsigned timeout_us,unsigned quantum){
+ unsigned elapsed=sceKernelGetSystemTimeLow()-start;
+ if(elapsed<timeout_us){unsigned remaining=timeout_us-elapsed;sceKernelDelayThread(remaining<quantum?remaining:quantum);}
+}
 static int WaitList(unsigned timeout_us) {
   unsigned start=sceKernelGetSystemTimeLow();
   for(;;) {
@@ -390,7 +394,7 @@ static int WaitList(unsigned timeout_us) {
     if(status==4) {
       if(!list_paused_logged){logline("list_paused,id,%d,storage_retained,1\n",pending_list);list_paused_logged=1;++paused_lists;}
       if(sceKernelGetSystemTimeLow()-start>=timeout_us)return -3;
-      sceKernelDelayThread(250);continue;
+      YieldForList(start,timeout_us,1000);continue;
     }
     if((unsigned)status==0x80000100u) {
       // A utility GE queue reset can retire our ID. An invalid ID alone is
@@ -402,7 +406,7 @@ static int WaitList(unsigned timeout_us) {
       if(!list_invalid_logged){logline("list_id_retired,waiting_for_idle,%u\n",!idle);list_invalid_logged=1;}
       if(idle){logline("list_id_retired,idle_fence_passed\n");return 1;}
       if(sceKernelGetSystemTimeLow()-start>=timeout_us)return -2;
-      sceKernelDelayThread(250);continue;
+      YieldForList(start,timeout_us,1000);continue;
     }
     if(status<0){logline("list_sync_error,0x%08X\n",(unsigned)status);return -1;}
     if((unsigned)(sceKernelGetSystemTimeLow()-start)>=timeout_us) {
@@ -410,7 +414,8 @@ static int WaitList(unsigned timeout_us) {
       if(status==PSP_GE_LIST_QUEUED&&sceGeListDeQueue(pending_list)>=0)pending_list=-1;
       return -1;
     }
-    sceKernelDelayThread(250);
+    // Polling only: a blocking driver wait would bypass our timeout.
+    YieldForList(start,timeout_us,200);
   }
 }
 static int RenderWithFilter(Frame f,unsigned target,int selected_filter) {
@@ -422,10 +427,14 @@ static int RenderWithFilter(Frame f,unsigned target,int selected_filter) {
   if(!token)token=(++finish_sequence)&0xffffu;
   finish_seen=0;finish_expected=token;
   if(finish_callback>=0)packet->commands[packet->count-2]=0x0f000000u|token;
-  sceKernelDcacheWritebackRange(packet,sizeof(*packet));
+  sceKernelDcacheWritebackRange(packet->commands,packet->count*sizeof(unsigned));
+  sceKernelDcacheWritebackRange(packet->vertices,packet->image_vertices*sizeof(*packet->vertices));
+  if(packet->overlay_vertices)sceKernelDcacheWritebackRange(packet->scanlines,packet->overlay_vertices*sizeof(*packet->scanlines));
+  if(packet->post_vertices)sceKernelDcacheWritebackRange(packet->post,packet->post_vertices*sizeof(*packet->post));
+  if(packet->clear_vertices)sceKernelDcacheWritebackRange(packet->clear,packet->clear_vertices*sizeof(*packet->clear));
   PspGeListArgs args={sizeof(args),ge_context,0,NULL};
   list_invalid_logged=list_paused_logged=0;
-  // Close the check/enqueue window against user context operations and saves.
+  // Recheck display ownership immediately before submitting scaler work.
   // The original enqueue supports nested interrupt guards.
   int intr=sceKernelCpuSuspendIntr();
   if(manual_native||UtilityVisible()||!running||reboot_exit){sceKernelCpuResumeIntr(intr);return -2;}
@@ -478,9 +487,13 @@ static int UpdateGameOutput(Frame f){
  unsigned target=output_index^1;
  int result=Render(f,target);if(result<0)return result;
  if(!ScalingVisible())return -2;
- ready_buffer=(void *)(0x04000000u+TV_VRAM_OFFSET+target*TV_FRAME_BYTES);
- int published=real_frame(0,ready_buffer,TV_STRIDE,0,1);
- if(published<0)return -1;
+ void *next_buffer=(void *)(0x04000000u+TV_VRAM_OFFSET+target*TV_FRAME_BYTES);
+ // Publish at vblank and advertise the pointer only if the driver accepts it.
+ int publish_intr=sceKernelCpuSuspendIntr();
+ int published=real_frame(0,next_buffer,TV_STRIDE,0,1);
+ if(published>=0)ready_buffer=next_buffer;
+ sceKernelCpuResumeIntr(publish_intr);
+ if(published<0){logline("publish_error,result,0x%08X\n",(unsigned)published);return -1;}
  output_index=target;last_scaled_source=f;last_scaled_valid=1;last_scaled_vcount=(unsigned)sceDisplayGetVcount();scaled_refresh_valid=1;return 0;
 }
 static int Deactivate(void) {
@@ -734,7 +747,7 @@ static int MainThread(SceSize argc,void *argv) {
   for(unsigned i=0;i<2;++i){SceUID fd=sceIoOpen(paths[i],PSP_O_WRONLY|PSP_O_CREAT|PSP_O_TRUNC,0666);if(fd>=0){logpath=paths[i];sceIoClose(fd);break;}}
   if(!logpath)return 0;
   unsigned fw=sceKernelDevkitVersion();
-  logline("PSPGoTVScale,base,alpha1,variant,simple_r28,model,%d,devkit,0x%08X\n",sceKernelGetModel(),fw);
+  logline("PSPGoTVScale,base,alpha1,variant,tidy_r29,model,%d,devkit,0x%08X\n",sceKernelGetModel(),fw);
   if(sceKernelGetModel()!=4||(fw!=0x06060010&&fw!=0x06060110)){logline("unsupported_model_or_firmware\n");FlushLogs(LOG_QUEUE_CAPACITY);return 0;}
   logline("scheduler,event,%d,worker_priority,%u\n",presentation_event,SCALER_WORKER_PRIORITY);
   filter_mode=FILTER_SOFT;logline("filter,%s\n",FilterName(filter_mode));

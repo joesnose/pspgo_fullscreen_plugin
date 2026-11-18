@@ -7,6 +7,8 @@
 #include <stdio.h>
 #include <sys/mman.h>
 static int finish_on_enqueue;
+static int sync_running,frame_fail,last_frame_sync;
+static unsigned cached_bytes[5];
 static unsigned event_bits,event_waits,event_sets,event_deletes;
 static unsigned clock_us,menu_bits,pad_buttons,current_k1;
 static int utility_kind,utility_state;
@@ -63,7 +65,8 @@ static int FakeHwSize(void){return 0x400000;}
 static int FakeSetSize(int n){edram=n;resize_calls++;return 0;}
 static int FakeGetFrame(int pri,void **p,int *s,int *f,int sync){(void)sync;Frame v=slot_driver?slots[pri][sync]:pri==2?game_frame:layer_frame;*p=(void *)(uintptr_t)v.address;*s=v.stride;*f=v.format;return 0;}
 static int FakeFrame(int pri,void *p,int stride,int format,int sync){
- frame_calls++;
+ frame_calls++;last_frame_sync=sync;
+ if(pri==0&&frame_fail){int result=frame_fail;frame_fail=0;return result;}
  if(slot_driver){
   // Real firmware shares layout metadata between live and pending addresses.
   // Immediate mode rejects stride/format changes and updates both addresses.
@@ -83,6 +86,7 @@ static int FakeFrame(int pri,void *p,int stride,int format,int sync){
  return 0;
 }
 static void Reset(void){
+ sync_running=frame_fail=last_frame_sync=0;memset(cached_bytes,0,sizeof(cached_bytes));
  finish_callback=-1;finish_sequence=finish_expected=finish_seen=finish_confirmed=finish_on_enqueue=0;
  presentation_event=-1;event_bits=event_waits=event_sets=event_deletes=0;last_scaled_vcount=0;
  scaled_refresh_valid=last_scaled_valid=0;notice_label=NULL;
@@ -105,6 +109,22 @@ static void Reset(void){
  assert(!((uintptr_t)packet&63)&&!((uintptr_t)ge_context&63));
 }
 int main(void){
+ // Timeout remains bounded with a registered finish callback and stuck GE.
+ Reset();InitFinishCallback();pending_list=7;finish_expected=42;sync_running=1;
+ unsigned wait_start=clock_us;assert(WaitList(1500)==-1&&clock_us-wait_start==1500&&pending_list==7);
+ assert(FreeGeMemory()<0);reboot_exit=reboot_late=1;
+ wait_start=clock_us;assert(WaitList(1500)==-1&&clock_us==wait_start);
+ // Failed publication must not advertise a buffer that the driver rejected.
+ Reset();AutoControl(0,0);Frame publish_frame=Snapshot(&source);publish_frame.serial++;clock_us+=16667;
+ void *previous_ready=ready_buffer;Frame previous_source=last_scaled_source;int previous_index=output_index;
+ frame_fail=-55;assert(UpdateGameOutput(publish_frame)==-1);
+ assert(ready_buffer==previous_ready&&output_index==previous_index&&last_scaled_source.serial==previous_source.serial);
+ assert(UpdateGameOutput(publish_frame)==0&&last_frame_sync==1&&last_scaled_source.serial==publish_frame.serial);
+ FrameHook(0,(void *)game_frame.address,game_frame.stride,game_frame.format,0);
+ assert(last_frame_sync==1&&display_frame.address==(uintptr_t)ready_buffer);
+ manual_native=1;FrameHook(0,(void *)game_frame.address,game_frame.stride,game_frame.format,0);
+ assert(last_frame_sync==0&&display_frame.address==game_frame.address);
+
  // A source presentation before the worker waits is retained, not lost.
  Reset();AutoControl(0,0);presentation_event=sceKernelCreateEventFlag("GoTVPresent",0,0,NULL);
  unsigned before_wait=clock_us;
@@ -177,7 +197,7 @@ int main(void){
  AutoControl(1,2100000);assert(!active&&home_paused&&home_output_restored&&mode_v==0xd2&&w_v==720&&h_v==480);
  assert(mode_calls==menu_mode_calls); // Do not reconfigure the menu's canvas.
  int public_mode,public_w,public_h;
- assert(GetModeHook(&public_mode,&public_w,&public_h)==0&&public_mode==0&&public_w==480&&public_h==272);
+ assert(GetModeHook(&public_mode,&public_w,&public_h)==0&&public_mode==restore_mode&&public_w==480&&public_h==272);
  assert(display_frame.address==0x88800000&&resize_calls==1&&reserved); // no EDRAM resize during HOME
  AutoControl(1,2200000);assert(frame_calls==3); // restore once, not on every menu tick
  // Native HOME close clears its layer. Scaling returns automatically.
@@ -441,7 +461,7 @@ int main(void){
  filter_mode=FILTER_DITHER;pad_buttons=0;PollFilter(0,109);alloc_fail=1;
  pad_buttons=chord;PollFilter(0,110);assert(filter_mode==FILTER_SHARP&&dep_memory<0);alloc_fail=0;
  assert(FreeGeMemory()==0);
- puts("Simple R27 presentation-event wake/pacing plus finish-confirmed frames and stable HOME plus automatic startup/filter cycle/native toggle/utility dialog/HOME/paused-GE and GE user-memory checks passed: immediate default-on, TV/source gating, busy retry, fault latch, NODS native status, NULL/kernel output restoration, native menu RGBA5551 GPU scaling, reboot quiesce/scanout cleanup, preserved HOME canvas/stride/format, no HOME resize, automatic resume and in-flight HOME suppression.");
+ puts("Tidy R29 cache ranges/bounded waits/vblank publication plus finish-confirmed frames and stable HOME plus automatic startup/filter cycle/native toggle/utility dialog/HOME/paused-GE and GE user-memory checks passed: immediate default-on, TV/source gating, busy retry, fault latch, NODS native status, NULL/kernel output restoration, native menu RGBA5551 GPU scaling, reboot quiesce/scanout cleanup, preserved HOME canvas/stride/format, no HOME resize, automatic resume and in-flight HOME suppression.");
 }
 unsigned TestRead(unsigned off){return off==0?3:off==0x1c?(lcd_force_scaled?2160:slot_driver?(hardware_width==720?2160:2040):(mode_v==0xd2?2160:2040)):off==0x2c?480:0;}
 int sceKernelIsIntrContext(void){return 0;}
@@ -450,7 +470,13 @@ SceUID sceKernelGetThreadId(void){return 1;}
 int sceKernelCpuSuspendIntr(void){int old=intr_depth;intr_depth++;return old;}void sceKernelCpuResumeIntr(int n){assert(n<intr_depth);intr_depth=n;}
 SceModule *sceKernelFindModuleByName(const char *n){if(input_fixture>=2&&!strcmp(n,"sceUtility_Driver"))return &utility_module;return input_fixture==1&&!strcmp(n,"sceImpose_Driver")?&input_module:NULL;}
 void sceKernelDcacheWritebackInvalidateAll(void){}void sceKernelIcacheInvalidateAll(void){}
-void sceKernelDcacheWritebackRange(const void *p,unsigned n){(void)p;(void)n;}
+void sceKernelDcacheWritebackRange(const void *p,unsigned n){
+ if(packet&&p==packet->commands){memset(cached_bytes,0,sizeof(cached_bytes));cached_bytes[0]=n;}
+ else if(packet&&p==packet->vertices)cached_bytes[1]=n;
+ else if(packet&&p==packet->scanlines)cached_bytes[2]=n;
+ else if(packet&&p==packet->post)cached_bytes[3]=n;
+ else if(packet&&p==packet->clear)cached_bytes[4]=n;
+}
 void sceKernelDcacheWritebackInvalidateRange(const void *p,unsigned n){assert(p&&n);}
 unsigned pspSdkSetK1(unsigned n){unsigned old=current_k1;current_k1=n;return old;}
 unsigned sceKernelGetSystemTimeLow(void){return clock_us;}
@@ -458,7 +484,7 @@ int sceKernelDelayThread(unsigned n){assert(intr_depth==0);unsigned previous=clo
  if(slot_driver&&!hold_vblank&&clock_us/16667u!=previous){for(int i=0;i<4;i++)slots[i][0]=slots[i][1];FakeLayoutTick();}
  return 0;}
 
-int sceGeListSync(int a,int b){(void)a;(void)b;if(open_during_render){menu_bits=0x100;open_during_render=0;}if(utility_during_render){utility_kind=1;utility_state=1;sync_invalid=1;utility_during_render=0;}
+int sceGeListSync(int a,int b){(void)a;assert(b==1);if(sync_running)return 2;if(open_during_render){menu_bits=0x100;open_during_render=0;}if(utility_during_render){utility_kind=1;utility_state=1;sync_invalid=1;utility_during_render=0;}
  return sync_paused?4:sync_invalid?(int)0x80000100u:PSP_GE_LIST_DONE;}
 int sceGeListDeQueue(int n){(void)n;return 0;}
 int sceGeListEnQueue(const void *p,void *s,int cb,PspGeListArgs *a){
@@ -467,6 +493,11 @@ int sceGeListEnQueue(const void *p,void *s,int cb,PspGeListArgs *a){
  assert((uintptr_t)packet->vertices>=0x08800000u&&(uintptr_t)packet->clear<0x0c000000u);
  assert((uintptr_t)packet->scanlines>=0x08800000u&&(uintptr_t)(packet->scanlines+480)<=0x0c000000u);
  assert((uintptr_t)a->context>=0x08800000u&&(uintptr_t)a->context+sizeof(*ge_context)<=0x0c000000u);
+ assert(cached_bytes[0]==packet->count*sizeof(*packet->commands));
+ assert(cached_bytes[1]==packet->image_vertices*sizeof(*packet->vertices));
+ assert(cached_bytes[2]==packet->overlay_vertices*sizeof(*packet->scanlines));
+ assert(cached_bytes[3]==packet->post_vertices*sizeof(*packet->post));
+ assert(cached_bytes[4]==packet->clear_vertices*sizeof(*packet->clear));
  enqueue_calls++;
  if(finish_on_enqueue&&!fail_enqueue&&cb>=0)GeFinish((int)(packet->commands[packet->count-2]&0xffffu),NULL);
  return fail_enqueue?-1:7;

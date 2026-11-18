@@ -16,7 +16,7 @@ typedef struct __attribute__((aligned(64))) {
   ClearVertex scanlines[1440];
   ClearVertex post[4];
   ClearVertex clear[2];
-  unsigned count;
+  unsigned count,image_vertices,overlay_vertices,post_vertices,clear_vertices;
 } ScalePacket;
 int ValidFrame(Frame f);
 int BuildFilteredScalePacket(ScalePacket *p,Frame source,unsigned output,int aspect,int filter);
