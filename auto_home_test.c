@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <sys/mman.h>
 static int finish_on_enqueue;
+static unsigned event_bits,event_waits,event_sets,event_deletes;
 static unsigned clock_us,menu_bits,pad_buttons,current_k1;
 static int utility_kind,utility_state;
 static int FakeUtilityType(void){return utility_kind;}
@@ -83,7 +84,8 @@ static int FakeFrame(int pri,void *p,int stride,int format,int sync){
 }
 static void Reset(void){
  finish_callback=-1;finish_sequence=finish_expected=finish_seen=finish_confirmed=finish_on_enqueue=0;
- last_scaled_valid=0;notice_label=NULL;
+ presentation_event=-1;event_bits=event_waits=event_sets=event_deletes=0;last_scaled_vcount=0;
+ scaled_refresh_valid=last_scaled_valid=0;notice_label=NULL;
  probe_native_reference=0;freeze_geometry=lcd_force_scaled=0;desired_width=hardware_width=480;hardware_stride=512;hardware_format=3;
  probe_ge=FakeProbeGe;probe_cmd=NULL;probe_dma=FakeProbeDma;probe_active_pending=probe_manual_started=probe_bound_taken=probe_ui_pending=probe_ui_seen=0;probe_word_reads=0;
  assert(intr_depth==0);slot_driver=hold_vblank=native_mode_with_old_layer=inject_native_frames=immediate_rejections=0;native_wait_reason=NULL;
@@ -103,15 +105,34 @@ static void Reset(void){
  assert(!((uintptr_t)packet&63)&&!((uintptr_t)ge_context&63));
 }
 int main(void){
+ // A source presentation before the worker waits is retained, not lost.
+ Reset();AutoControl(0,0);presentation_event=sceKernelCreateEventFlag("GoTVPresent",0,0,NULL);
+ unsigned before_wait=clock_us;
+ FrameHook(2,(void *)game_frame.address,game_frame.stride,game_frame.format,1);
+ assert(event_bits==1&&event_sets==1);WaitForWork();
+ assert(event_bits==0&&event_waits==1&&clock_us==before_wait);
+ // Multiple presents coalesce. A silent game still wakes for input/HOME.
+ NotifyWorker();NotifyWorker();WaitForWork();assert(event_bits==0&&clock_us==before_wait);
+ WaitForWork();assert(clock_us-before_wait==16667);
+ // A second new presentation within one refresh cannot overwrite scanout.
+ Frame pacing_frame=Snapshot(&source);clock_us+=16667;pacing_frame.serial++;
+ assert(UpdateGameOutput(pacing_frame)==0);int pacing_jobs=enqueue_calls;
+ pacing_frame.serial++;assert(UpdateGameOutput(pacing_frame)==1&&enqueue_calls==pacing_jobs);
+ clock_us+=16667;assert(UpdateGameOutput(pacing_frame)==0&&enqueue_calls==pacing_jobs+1);
+ unsigned k1_before=0x100000;current_k1=k1_before;NotifyWorker();assert(current_k1==k1_before);
+ intr_depth=1;NotifyWorker();assert(intr_depth==1&&current_k1==k1_before);intr_depth=0;
+ ClosePresentationEvent();assert(presentation_event<0&&event_deletes==1);
+ unsigned sets_after_close=event_sets;NotifyWorker();assert(event_sets==sets_after_close);
+
  Reset();AutoControl(0,0);Frame fresh=Snapshot(&source);
  int duplicate_jobs=enqueue_calls,duplicate_frames=frame_calls;
  for(int repeat=0;repeat<60;repeat++)assert(UpdateGameOutput(fresh)==1);
  assert(enqueue_calls==duplicate_jobs&&frame_calls==duplicate_frames);
- fresh.serial++;assert(UpdateGameOutput(fresh)==0&&enqueue_calls==duplicate_jobs+1);
+ clock_us+=16667;fresh.serial++;assert(UpdateGameOutput(fresh)==0&&enqueue_calls==duplicate_jobs+1);
  assert(UpdateGameOutput(fresh)==1&&enqueue_calls==duplicate_jobs+1);
  // Filter changes invalidate the cached presentation even on a still frame.
  pad_buttons=PSP_CTRL_LTRIGGER|PSP_CTRL_RTRIGGER|PSP_CTRL_TRIANGLE;PollFilter(0,clock_us);
- assert(!last_scaled_valid&&UpdateGameOutput(fresh)==0&&enqueue_calls==duplicate_jobs+2);
+ clock_us+=16667;assert(!last_scaled_valid&&UpdateGameOutput(fresh)==0&&enqueue_calls==duplicate_jobs+2);
 
  // A positively completed packet remains usable even if its ID is already
  // invalid and the game has started more work; no global idle is required.
@@ -420,7 +441,7 @@ int main(void){
  filter_mode=FILTER_DITHER;pad_buttons=0;PollFilter(0,109);alloc_fail=1;
  pad_buttons=chord;PollFilter(0,110);assert(filter_mode==FILTER_SHARP&&dep_memory<0);alloc_fail=0;
  assert(FreeGeMemory()==0);
- puts("Simple R26 fresh-presentation scheduling plus finish-confirmed frames and stable HOME plus automatic startup/filter cycle/native toggle/utility dialog/HOME/paused-GE and GE user-memory checks passed: immediate default-on, TV/source gating, busy retry, fault latch, NODS native status, NULL/kernel output restoration, native menu RGBA5551 GPU scaling, reboot quiesce/scanout cleanup, preserved HOME canvas/stride/format, no HOME resize, automatic resume and in-flight HOME suppression.");
+ puts("Simple R27 presentation-event wake/pacing plus finish-confirmed frames and stable HOME plus automatic startup/filter cycle/native toggle/utility dialog/HOME/paused-GE and GE user-memory checks passed: immediate default-on, TV/source gating, busy retry, fault latch, NODS native status, NULL/kernel output restoration, native menu RGBA5551 GPU scaling, reboot quiesce/scanout cleanup, preserved HOME canvas/stride/format, no HOME resize, automatic resume and in-flight HOME suppression.");
 }
 unsigned TestRead(unsigned off){return off==0?3:off==0x1c?(lcd_force_scaled?2160:slot_driver?(hardware_width==720?2160:2040):(mode_v==0xd2?2160:2040)):off==0x2c?480:0;}
 int sceKernelIsIntrContext(void){return 0;}
@@ -508,3 +529,12 @@ unsigned TestHardwareWord(unsigned address){
 
 int sceGeSetCallback(PspGeCallbackData *c){assert(c->finish_func==GeFinish&&c->signal_func==NULL);return 5;}
 int sceGeUnsetCallback(int id){assert(id==5);return 0;}
+
+SceUID sceKernelCreateEventFlag(const char *name,int attr,int bits,void *options){assert(!strcmp(name,"GoTVPresent")&&attr==0&&bits==0&&!options);event_bits=0;return 77;}
+int sceKernelSetEventFlag(int id,unsigned bits){assert(id==77&&bits==1);event_bits|=bits;event_sets++;return 0;}
+int sceKernelDeleteEventFlag(int id){assert(id==77);event_deletes++;return 0;}
+int sceKernelWaitEventFlag(int id,unsigned bits,unsigned mode,unsigned *out,SceUInt *timeout){
+ assert(id==77&&bits==1&&mode==(PSP_EVENT_WAITOR|PSP_EVENT_WAITCLEAR)&&*timeout==16667&&intr_depth==0);event_waits++;
+ if(event_bits&bits){*out=event_bits;event_bits=0;return 0;}
+ clock_us+=*timeout;*timeout=0;return (int)0x800201a8u;
+}

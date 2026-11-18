@@ -2,6 +2,7 @@
 #define GO_TV_TEST_PSP_H
 #include <stdint.h>
 #include <stddef.h>
+typedef uint32_t u32;
 typedef int SceUID;
 typedef unsigned SceSize;
 typedef unsigned SceUInt;
@@ -69,3 +70,10 @@ typedef void (*PspGeCallback)(int,void *);
 typedef struct {PspGeCallback signal_func;void *signal_arg;PspGeCallback finish_func;void *finish_arg;} PspGeCallbackData;
 int sceGeSetCallback(PspGeCallbackData *);
 int sceGeUnsetCallback(int);
+
+#define PSP_EVENT_WAITOR 1
+#define PSP_EVENT_WAITCLEAR 0x20
+SceUID sceKernelCreateEventFlag(const char *,int,int,void *);
+int sceKernelSetEventFlag(int,unsigned);
+int sceKernelDeleteEventFlag(int);
+int sceKernelWaitEventFlag(int,unsigned,unsigned,unsigned *,SceUInt *);

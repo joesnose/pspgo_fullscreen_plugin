@@ -18,7 +18,7 @@
 #include <stddef.h>
 #include "render.h"
 #include "effects.h"
-PSP_MODULE_INFO("PSPGoTVScaleV1Auto",0x1000,1,26);
+PSP_MODULE_INFO("PSPGoTVScaleV1Auto",0x1000,1,27);
 extern void sctrlHENPatchSyscall(void *,void *);
 static const char *logpath;
 #include "logger.inc"
@@ -42,11 +42,23 @@ static SetSizeFn set_size;
 static volatile int running=1,active,reserved,abort_requested;
 static int hooks_installed,aspect,output_index,restore_mode=0x2d2;
 static SceUID worker=-1;
+static SceUID presentation_event=-1;
+#define SCALER_WORKER_PRIORITY 0x30
+static unsigned last_scaled_vcount;
+static void NotifyWorker(void){
+ unsigned k1=pspSdkSetK1(0);int intr=sceKernelCpuSuspendIntr();
+ if(presentation_event>=0)sceKernelSetEventFlag(presentation_event,1);
+ sceKernelCpuResumeIntr(intr);pspSdkSetK1(k1);
+}
+static void ClosePresentationEvent(void){
+ int intr=sceKernelCpuSuspendIntr();SceUID event=presentation_event;presentation_event=-1;sceKernelCpuResumeIntr(intr);
+ if(event>=0)sceKernelDeleteEventFlag(event);
+}
 static volatile Frame source,original0;
 static volatile unsigned presentations;
 static void *ready_buffer;
 static Frame last_scaled_source;
-static int last_scaled_valid;
+static int last_scaled_valid,scaled_refresh_valid;
 /* GE cannot normally fetch kernel-partition buffers. All GPU-consumed
  * commands, vertices and saved-context lists belong to one user-RAM block. */
 typedef struct __attribute__((aligned(64))) {
@@ -280,7 +292,9 @@ static int FrameHook(int pri,void *ptr,int stride,int format,int sync) {
     if(!reserved||!ptr||ValidOutputFrame(proposed))Capture(&original0,ptr,stride,format);
     if((ScalingVisible()||MenuScalingVisible())&&ready_buffer){ptr=ready_buffer;stride=TV_STRIDE;format=0;}
   }
-  return real_frame(pri,ptr,stride,format,sync);
+  int result=real_frame(pri,ptr,stride,format,sync);
+  if(pri==2&&result>=0&&running)NotifyWorker();
+  return result;
 }
 static int ModeHook(int mode,int width,int height) {
   if(running&&!reboot_exit&&reserved&&UtilityVisible()&&!HomeVisible()) {
@@ -458,13 +472,16 @@ static int Render(Frame f,unsigned target){
  * Duplicate source presentations need no additional GE/context/scanout work. */
 static int UpdateGameOutput(Frame f){
  if(last_scaled_valid&&f.serial==last_scaled_source.serial&&f.address==last_scaled_source.address&&f.stride==last_scaled_source.stride&&f.format==last_scaled_source.format)return 1;
+ // Never overwrite both scanout buffers within the same TV refresh if a
+ // game presents several times before vblank. The newest source stays pending.
+ if(scaled_refresh_valid&&(unsigned)sceDisplayGetVcount()==last_scaled_vcount)return 1;
  unsigned target=output_index^1;
  int result=Render(f,target);if(result<0)return result;
  if(!ScalingVisible())return -2;
  ready_buffer=(void *)(0x04000000u+TV_VRAM_OFFSET+target*TV_FRAME_BYTES);
  int published=real_frame(0,ready_buffer,TV_STRIDE,0,1);
  if(published<0)return -1;
- output_index=target;last_scaled_source=f;last_scaled_valid=1;return 0;
+ output_index=target;last_scaled_source=f;last_scaled_valid=1;last_scaled_vcount=(unsigned)sceDisplayGetVcount();scaled_refresh_valid=1;return 0;
 }
 static int Deactivate(void) {
   if(pending_list>=0)return -1;
@@ -511,7 +528,7 @@ static int Activate(void) {
   int rendered=Render(f,0);
   if(rendered==-2){home_paused=reserved;home_output_restored=0;next_auto=sceKernelGetSystemTimeLow()+300000u;return 0;}
   if(rendered<0){if(pending_list<0)Deactivate();return -1;}
-  last_scaled_source=f;last_scaled_valid=1;
+  last_scaled_source=f;last_scaled_valid=1;last_scaled_vcount=(unsigned)sceDisplayGetVcount();scaled_refresh_valid=1;
   ready_buffer=(void *)(0x04000000u+TV_VRAM_OFFSET);
   if(MenuVisible()){home_paused=1;home_output_restored=1;return 0;}
   active=1;
@@ -618,7 +635,7 @@ static int ResumeAfterHome(void) {
   int ret=real_mode(0xd2,720,480);
   if(ret>=0&&!MenuVisible())ret=real_frame(0,ready_buffer,TV_STRIDE,0,1);
   if(ret<0){active=0;home_paused=1;return -1;}
-  last_scaled_source=f;last_scaled_valid=1;
+  last_scaled_source=f;last_scaled_valid=1;last_scaled_vcount=(unsigned)sceDisplayGetVcount();scaled_refresh_valid=1;
   output_index=target;ArmScanoutProbe();logline("system_dialog_closed,scaling_resumed\n");return 0;
 }
 static void AutoControl(int menu,unsigned now) {
@@ -700,6 +717,16 @@ static void Report(void) {
           sceKernelGetSystemTimeLow()/1000,active,aspect,presentations,draws,
           draws?(unsigned)(wait_total/draws):0,max_wait,timeouts,invalid_frames,paused_lists,pending_list,manual_native,f.address,f.stride,f.format);
 }
+static void WaitForWork(void){
+ if(active&&presentation_event>=0){
+  u32 bits=0;SceUInt timeout=16667;
+  // The event is sticky: a present before this wait is not lost. Multiple
+  // pending presents coalesce; UpdateGameOutput takes the newest source.
+  int result=sceKernelWaitEventFlag(presentation_event,1,PSP_EVENT_WAITOR|PSP_EVENT_WAITCLEAR,&bits,&timeout);
+  if(result<0&&(unsigned)result!=0x800201a8u)sceKernelDelayThread(1000);
+ }else if(active||MenuScalingVisible())sceDisplayWaitVblankStart();
+ else sceKernelDelayThread(10000);
+}
 static int MainThread(SceSize argc,void *argv) {
   (void)argc;(void)argv;
   log_worker=sceKernelGetThreadId();
@@ -707,8 +734,9 @@ static int MainThread(SceSize argc,void *argv) {
   for(unsigned i=0;i<2;++i){SceUID fd=sceIoOpen(paths[i],PSP_O_WRONLY|PSP_O_CREAT|PSP_O_TRUNC,0666);if(fd>=0){logpath=paths[i];sceIoClose(fd);break;}}
   if(!logpath)return 0;
   unsigned fw=sceKernelDevkitVersion();
-  logline("PSPGoTVScale,base,alpha1,variant,simple_r26,model,%d,devkit,0x%08X\n",sceKernelGetModel(),fw);
+  logline("PSPGoTVScale,base,alpha1,variant,simple_r27,model,%d,devkit,0x%08X\n",sceKernelGetModel(),fw);
   if(sceKernelGetModel()!=4||(fw!=0x06060010&&fw!=0x06060110)){logline("unsupported_model_or_firmware\n");FlushLogs(LOG_QUEUE_CAPACITY);return 0;}
+  logline("scheduler,event,%d,worker_priority,%u\n",presentation_event,SCALER_WORKER_PRIORITY);
   filter_mode=FILTER_SOFT;logline("filter,%s\n",FilterName(filter_mode));
   if(InitGeMemory()<0){FlushLogs(LOG_QUEUE_CAPACITY);return 0;}
   if(InstallHooks()<0){FreeGeMemory();FlushLogs(LOG_QUEUE_CAPACITY);return 0;}
@@ -748,7 +776,7 @@ static int MainThread(SceSize argc,void *argv) {
     now=sceKernelGetSystemTimeLow();
     if(now-last_report>=1000000){Report();if(menu)LogMenuLayers();last_report=now;}
     // Worker never spins while waiting for input or the next output frame.
-    if(active||MenuScalingVisible())sceDisplayWaitVblankStart();else sceKernelDelayThread(10000);
+    WaitForWork();
   }
   if(reboot_exit){CleanupBeforeReboot();if(!reboot_late)FlushLogs(LOG_QUEUE_CAPACITY);return 0;}
   if(pending_list<0)Deactivate();
@@ -756,19 +784,20 @@ static int MainThread(SceSize argc,void *argv) {
 }
 int module_start(SceSize args,void *argp) {
   (void)args;(void)argp;
-  worker=sceKernelCreateThread("GoTVScale",MainThread,0x18,0x6000,0,NULL);
-  if(worker<0)return worker;
+  presentation_event=sceKernelCreateEventFlag("GoTVPresent",0,0,NULL);
+  worker=sceKernelCreateThread("GoTVScale",MainThread,SCALER_WORKER_PRIORITY,0x6000,0,NULL);
+  if(worker<0){ClosePresentationEvent();return worker;}
   int ret=sceKernelStartThread(worker,0,NULL);
-  if(ret<0){sceKernelDeleteThread(worker);worker=-1;}
+  if(ret<0){sceKernelDeleteThread(worker);worker=-1;ClosePresentationEvent();}
   return ret;
 }
 int module_stop(SceSize args,void *argp) {
   (void)args;(void)argp;
   if(pending_list>=0)return -1; // Do not free a context/list still used by GE.
-  running=0;
+  running=0;NotifyWorker();
   if(worker>=0){sceKernelWaitThreadEnd(worker,NULL);sceKernelDeleteThread(worker);worker=-1;}
   if(reserved&&Deactivate()<0)return -1;
-  RemoveHooks();
+  RemoveHooks();ClosePresentationEvent();
   if(finish_callback>=0){sceGeUnsetCallback(finish_callback);finish_callback=-1;}
   if(FreeDepMemory()<0)return -1;
   return FreeGeMemory();
@@ -779,7 +808,7 @@ int module_stop(SceSize args,void *argp) {
 int module_reboot_phase(int phase,void *argp,int a2,int a3) {
   (void)argp;(void)a2;(void)a3;
   if(phase!=3||reboot_joined)return 0;
-  reboot_exit=1;active=0;home_scaled_ready=0;running=0;
+  reboot_exit=1;active=0;home_scaled_ready=0;running=0;NotifyWorker();
   if(worker>=0&&!worker_done){SceUInt timeout=500000;sceKernelWaitThreadEnd(worker,&timeout);}
   reboot_joined=1;return 0;
 }

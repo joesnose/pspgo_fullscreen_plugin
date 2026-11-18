@@ -1,6 +1,6 @@
 {
-  "variant": "Simple R26",
-  "revision": 26,
+  "variant": "Simple R27",
+  "revision": 27,
   "hardware_tested": false,
   "psp_build": "passed -Wall -Wextra -Werror",
   "host_tests": [
@@ -25,9 +25,9 @@
     "file-write hooks",
     "savedata-entry syscall hook"
   ],
-  "limitation": "New scheduling assumes game presents framebuffer updates; speed increase requires hardware confirmation",
-  "change": "Scale new game presentations only; skip redundant fullscreen color clear; keep clear-mode reset and pillarbox clears",
-  "evidence": "SMW R25 Soft ~59 scaler draws/s with ~30 game presents/s, ~58\u201360 presents/s native, no recorded timeouts",
-  "new_tests": "60 unchanged presentations cause no jobs/scanout updates; new serial one job; filter change redraw;144 packet and192 filter checks verify conditional clear/reset",
+  "limitation": "Host mocks cannot demonstrate real speed or scheduling; hardware test needed; intermediate uncapped presentations may coalesce",
+  "change": "Successful game presents signal a sticky worker event; worker priority0x30; bounded event wait instead of unconditional gameplay vblank wait; one game publication per TV refresh",
+  "evidence": "R26 SMW log scaler draws follow presents but sustained sections~39\u201345 presents/s",
+  "new_tests": "Sticky delivery/coalescing, timeout wake, same-refresh deferral, new-refresh processing, K1/nestedIRQ preservation and closed-event no-op",
   "callback_safety": "volatile matching-token store only in interrupt; no I/O/alloc/wait/GE calls"
 }

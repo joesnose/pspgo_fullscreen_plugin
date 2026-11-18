@@ -1,9 +1,41 @@
-# PSP Go Fullscreen Plugin — Simple R26
+# PSP Go Fullscreen Plugin — Simple R27
 
-[Download Simple R26 build and source](PSPGoTVScale-simple-r26.zip) · [PRX](PSPGoTVScale.prx)
+[Download Simple R27 build and source](PSPGoTVScale-simple-r27.zip) · [PRX](PSPGoTVScale.prx)
 
 Automatic fullscreen TV scaling for PSP Go on ARK, 6.60/6.61, progressive
 component output. Starts enabled with Soft filtering. No INI is needed.
+
+## R27 presentation-driven scheduling
+
+R26 improved SMW but its log still showed sustained 39–45 presentations/second
+in part of the run, with scaler draws following those presentations. R27 changes
+the worker schedule rather than adding a filter or a fixed frameskip setting.
+
+A successful game priority-2 display presentation signals one owned event flag.
+The hook only signals this nonblocking kernel event; it does not render, wait,
+allocate or perform file I/O. Signalling preserves caller K1/interrupt state.
+The worker waits on the sticky event with an approximately 16.7 ms timeout so
+input and HOME remain responsive when presentations stop. Several pending
+presents coalesce to the newest captured source rather than building a backlog.
+
+Worker priority changes from 0x18 to 0x30 (lower scheduling priority), allowing
+usual higher-priority game threads to run first. This is not a CPU/GPU clock
+change. During gameplay the worker no longer unconditionally waits for vblank
+after every loop; it can start when a new presentation arrives. HOME retains
+its existing vblank-driven rendering path. The event is signalled on early stop
+and reboot so the worker can leave its wait promptly. Failed event creation
+falls back to the prior bounded vblank/idle wait path.
+
+A second source arriving during the same TV refresh is deferred, keeping at
+most one game-output publication per refresh. The latest source is retried;
+unchanged frames still submit no extra GPU work. No fixed alternate-frame skip
+is added, but overloaded/uncapped games can have intermediate presentations
+coalesced. The last confirmed image remains selected between updates.
+
+Controls, twelve filters, GE finish confirmation and native/save/HOME handling
+are retained. Hardware timing and speed improvement need a device test. The
+scheduler log reports event UID and priority48; a negative event UID indicates
+fallback mode.
 
 ## R26 GPU-work reduction
 
@@ -94,7 +126,7 @@ silent end-of-race save crash; the system save/load dialog fix is retained.
 
 Basic queued diagnostic logging remains at ef0:/PSPGoTVScale.txt (ms0:/ fallback).
 Hooks queue messages in fixed memory; the worker writes them outside interrupt
-context. The banner identifies simple_r26. No clocks, DDR unlocks, NODS binary
+context. The banner identifies simple_r27. No clocks, DDR unlocks, NODS binary
 changes or VSH volume work are included.
 
 ## Install
@@ -125,3 +157,5 @@ New actual-source checks repeatedly retire 50 list IDs without a menu and verify
 R25 actual-source checks verify finish-confirmed invalid IDs under a busy global GE queue, mismatched-token rejection, unchanged idle fencing for unconfirmed work, stable scaled HOME across retired IDs and layer clears, and normal HOME close/resume.
 
 R26 host checks verify 60 duplicate source samples submit no extra GE/scanout work, a new serial submits one job, and a filter change forces a redraw. Packet/filter checks verify clears are omitted only for fullscreen and clear mode is explicitly disabled in every packet.
+
+R27 actual-source host checks cover presentation-before-wait delivery, event coalescing, timeout input wake, same-refresh deferral followed by next-refresh processing, K1/nested-interrupt preservation and no signalling after event closure. These mock checks do not simulate real PSP scheduling priority or GPU timing.
