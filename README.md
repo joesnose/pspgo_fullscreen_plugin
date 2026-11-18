@@ -1,11 +1,24 @@
-# PSP Go Fullscreen Plugin — Simple R27
+# PSP Go Fullscreen Plugin — Simple R28
 
-[Download Simple R27 build and source](PSPGoTVScale-simple-r27.zip) · [PRX](PSPGoTVScale.prx)
+[Download Simple R28 build and source](PSPGoTVScale-simple-r28.zip) · [PRX](PSPGoTVScale.prx)
 
 Automatic fullscreen TV scaling for PSP Go on ARK, 6.60/6.61, progressive
 component output. Starts enabled with Soft filtering. No INI is needed.
 
-## R27 presentation-driven scheduling
+## R28 controlled priority comparison
+
+R28 changes only worker priority from R27's 0x30 back to 0x18, apart from version
+identifiers. Event wake-up, refresh pacing, renderer, filters, HOME/save-load
+handling and logging are unchanged. Compare the same SMW scene on Soft, then
+switch scaling off with L+R+Square and collect ef0:/PSPGoTVScale.txt before
+launching another game. Fully restart after replacing the PRX.
+
+The scheduler log should report worker_priority,24 (decimal 0x18). A positive
+event UID confirms the event-driven path is active. R27 showed sustained
+30–32 presentations/s versus mostly58–60 native in the user's run. Whether
+restoring priority improves this needs real hardware confirmation.
+
+## Retained R27 presentation-driven scheduling
 
 R26 improved SMW but its log still showed sustained 39–45 presentations/second
 in part of the run, with scaler draws following those presentations. R27 changes
@@ -18,8 +31,7 @@ The worker waits on the sticky event with an approximately 16.7 ms timeout so
 input and HOME remain responsive when presentations stop. Several pending
 presents coalesce to the newest captured source rather than building a backlog.
 
-Worker priority changes from 0x18 to 0x30 (lower scheduling priority), allowing
-usual higher-priority game threads to run first. This is not a CPU/GPU clock
+R27 changed worker priority from 0x18 to 0x30. R28 restores 0x18 for this comparison. This is not a CPU/GPU clock
 change. During gameplay the worker no longer unconditionally waits for vblank
 after every loop; it can start when a new presentation arrives. HOME retains
 its existing vblank-driven rendering path. The event is signalled on early stop
@@ -34,7 +46,7 @@ coalesced. The last confirmed image remains selected between updates.
 
 Controls, twelve filters, GE finish confirmation and native/save/HOME handling
 are retained. Hardware timing and speed improvement need a device test. The
-scheduler log reports event UID and priority48; a negative event UID indicates
+scheduler log reports event UID and priority24; a negative event UID indicates
 fallback mode.
 
 ## R26 GPU-work reduction
@@ -126,7 +138,7 @@ silent end-of-race save crash; the system save/load dialog fix is retained.
 
 Basic queued diagnostic logging remains at ef0:/PSPGoTVScale.txt (ms0:/ fallback).
 Hooks queue messages in fixed memory; the worker writes them outside interrupt
-context. The banner identifies simple_r27. No clocks, DDR unlocks, NODS binary
+context. The banner identifies simple_r28. No clocks, DDR unlocks, NODS binary
 changes or VSH volume work are included.
 
 ## Install

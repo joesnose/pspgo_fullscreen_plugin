@@ -18,7 +18,7 @@
 #include <stddef.h>
 #include "render.h"
 #include "effects.h"
-PSP_MODULE_INFO("PSPGoTVScaleV1Auto",0x1000,1,27);
+PSP_MODULE_INFO("PSPGoTVScaleV1Auto",0x1000,1,28);
 extern void sctrlHENPatchSyscall(void *,void *);
 static const char *logpath;
 #include "logger.inc"
@@ -43,7 +43,7 @@ static volatile int running=1,active,reserved,abort_requested;
 static int hooks_installed,aspect,output_index,restore_mode=0x2d2;
 static SceUID worker=-1;
 static SceUID presentation_event=-1;
-#define SCALER_WORKER_PRIORITY 0x30
+#define SCALER_WORKER_PRIORITY 0x18
 static unsigned last_scaled_vcount;
 static void NotifyWorker(void){
  unsigned k1=pspSdkSetK1(0);int intr=sceKernelCpuSuspendIntr();
@@ -734,7 +734,7 @@ static int MainThread(SceSize argc,void *argv) {
   for(unsigned i=0;i<2;++i){SceUID fd=sceIoOpen(paths[i],PSP_O_WRONLY|PSP_O_CREAT|PSP_O_TRUNC,0666);if(fd>=0){logpath=paths[i];sceIoClose(fd);break;}}
   if(!logpath)return 0;
   unsigned fw=sceKernelDevkitVersion();
-  logline("PSPGoTVScale,base,alpha1,variant,simple_r27,model,%d,devkit,0x%08X\n",sceKernelGetModel(),fw);
+  logline("PSPGoTVScale,base,alpha1,variant,simple_r28,model,%d,devkit,0x%08X\n",sceKernelGetModel(),fw);
   if(sceKernelGetModel()!=4||(fw!=0x06060010&&fw!=0x06060110)){logline("unsupported_model_or_firmware\n");FlushLogs(LOG_QUEUE_CAPACITY);return 0;}
   logline("scheduler,event,%d,worker_priority,%u\n",presentation_event,SCALER_WORKER_PRIORITY);
   filter_mode=FILTER_SOFT;logline("filter,%s\n",FilterName(filter_mode));

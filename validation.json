@@ -1,6 +1,6 @@
 {
-  "variant": "Simple R27",
-  "revision": 27,
+  "variant": "Simple R28",
+  "revision": 28,
   "hardware_tested": false,
   "psp_build": "passed -Wall -Wextra -Werror",
   "host_tests": [
@@ -25,9 +25,9 @@
     "file-write hooks",
     "savedata-entry syscall hook"
   ],
-  "limitation": "Host mocks cannot demonstrate real speed or scheduling; hardware test needed; intermediate uncapped presentations may coalesce",
-  "change": "Successful game presents signal a sticky worker event; worker priority0x30; bounded event wait instead of unconditional gameplay vblank wait; one game publication per TV refresh",
-  "evidence": "R26 SMW log scaler draws follow presents but sustained sections~39\u201345 presents/s",
+  "limitation": "Hardware comparison needed; event wake and refresh pacing retained unchanged",
+  "change": "Only worker priority restored from0x30 to0x18 versus R27, excluding version identifiers",
+  "evidence": "R27 sustained30\u201332 scaled presentations/s vs mostly58\u201360 native; measured queue/wait~8.4ms",
   "new_tests": "Sticky delivery/coalescing, timeout wake, same-refresh deferral, new-refresh processing, K1/nestedIRQ preservation and closed-event no-op",
   "callback_safety": "volatile matching-token store only in interrupt; no I/O/alloc/wait/GE calls"
 }
