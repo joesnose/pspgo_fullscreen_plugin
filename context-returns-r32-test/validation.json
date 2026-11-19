@@ -1,0 +1,8 @@
+{
+  "variant": "context_returns_r32",
+  "base": "hidden_native_r31",
+  "change": "clear only unused CALL return registers in owned context from FINISH callback before restore",
+  "psp_build": "passed with -Werror",
+  "host_tests": "ASan/UBSan passed, depth masks and entire-context preservation checked",
+  "hardware_test": "pending"
+}
