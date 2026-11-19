@@ -1,0 +1,11 @@
+{
+  "variant": "gta_context_off_r34",
+  "base": "quiet_r33",
+  "binary": "joesnose_Go_fullscreen.prx",
+  "change": "unused return clearing disabled globally for this standalone comparison",
+  "logging": false,
+  "blurrier_radius_relative_to_blur": 1.5,
+  "psp_build": "passed with warnings treated as errors",
+  "host_tests": "ASan/UBSan lifecycle passed; all context words unchanged for all CALL depths",
+  "hardware_test": "pending"
+}
