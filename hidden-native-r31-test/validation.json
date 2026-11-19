@@ -1,0 +1,7 @@
+{
+  "variant": "hidden_native_r31",
+  "purpose": "native display plus hidden Soft GPU jobs with retained 4 MiB EDRAM",
+  "psp_build": "passed, strict warnings",
+  "host_tests": "ASan/UBSan lifecycle suite passed",
+  "hardware_test": "pending"
+}
