@@ -1,0 +1,11 @@
+{
+  "variant": "continuous_r35",
+  "base": "quiet_r33",
+  "change": "remove unchanged-source suppression from visible game scaling; retain refresh fence",
+  "burnout_context_fix": true,
+  "logging": false,
+  "blurrier_radius_relative_to_blur": 1.5,
+  "psp_build": "passed with -Werror",
+  "host_tests": "ASan/UBSan lifecycle passed; identical-source 60-refresh rendering and publication verified",
+  "hardware_test": "pending"
+}
