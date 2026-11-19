@@ -1,0 +1,15 @@
+{
+  "prepared": "2026-11-19",
+  "latest_prx_sha256": "1275f1be1ef37d1314ae72ba987aa5a4d0bc19b45c00c7d53baf738b628b9cc6",
+  "latest_source_commit": "44c44a1c419647b4c2b46d777bf12ff94018630c",
+  "latest_exact_binary_burnout_failure_confirmed": false,
+  "last_reported_failure": "uploaded fixed-v2 Soft, Complete before system save screen",
+  "native2m_retained_workspace_complete_passed": true,
+  "native4m_retained_workspace_result": "unconfirmed",
+  "valid_exception_capture": false,
+  "user_firmware_description": "ARK5/6.61",
+  "observed_devkit": "0x06060010",
+  "ark_source_reference_commit": "7c03c3735503dc3fad999f4687b890fefef6467d",
+  "reported_failure_candidate_prx_sha256": "d8f4ec52c228632a2c10373105452b70861686935c20e02627e9e199f9d1cf67",
+  "reported_failure_candidate_installed_hash_verified": false
+}
