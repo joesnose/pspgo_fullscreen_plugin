@@ -1,0 +1,11 @@
+{
+  "variant": "Native4M R30 diagnostic",
+  "revision": 30,
+  "baseline": "R29; latest R29 exact-binary Burnout failure still requires confirmation",
+  "hardware_tested": false,
+  "psp_build": "passed -Wall -Wextra -Werror",
+  "host_tests": "ASan/UBSan actual-source suite passes: retained4MiB native output/workspace, frozen draw count, size query masking, resume/reboot cleanup and R29 baseline checks",
+  "test_control": "L+R+Square once before Complete; keep Soft; no hidden rendering",
+  "expected_log": "native4m_r30 and native4m_test ready1 edram4194304 held1 gpu_uid>=0 pending-1 draws==draws_at_handoff",
+  "interpretation": "Failure strengthens EDRAM-state hypothesis, not proof of size-only cause"
+}
