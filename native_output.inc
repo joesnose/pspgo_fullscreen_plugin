@@ -66,6 +66,12 @@ static int NativeHardwareReady(void){
  }
  sceKernelCpuResumeIntr(intr);return ready;
 }
+static int ReleaseNativeEdram(void){
+ if(!native_edram_held)return 0;
+ int intr=sceKernelCpuSuspendIntr(),ret=1;
+ if(NativeLayersDetached()&&NativeHardwareReady()&&sceGeDrawSync(1)==PSP_GE_LIST_DONE&&set_size(0x200000)>=0&&get_size()==0x200000){native_edram_held=0;ret=0;}
+ sceKernelCpuResumeIntr(intr);return ret;
+}
 static int RestoreManualNativeOutput(void){
  if(!manual_native)return -1; // never used for automatic save/load or HOME
  if(!probe_manual_started){ProbeScanout("manual_before");probe_manual_started=1;}
@@ -117,8 +123,10 @@ static int RestoreManualNativeOutput(void){
   // Verify references and idle state atomically with restoring the 2 MiB bank.
   intr=sceKernelCpuSuspendIntr();ret=1;
   if(NativeLayersDetached()&&NativeHardwareReady()&&sceGeDrawSync(1)==PSP_GE_LIST_DONE){
-   ret=set_size(0x200000);
-   if(ret>=0&&get_size()==0x200000){reserved=0;ready_buffer=NULL;ret=0;}else ret=1;
+   if(native_test_keep4m){native_edram_held=1;reserved=0;ready_buffer=NULL;ret=0;}
+   else {ret=set_size(0x200000);
+    if(ret>=0&&get_size()==0x200000){reserved=0;ready_buffer=NULL;ret=0;}else ret=1;}
+
   }
   sceKernelCpuResumeIntr(intr);
   if(ret)return NativeWait("scanout_or_ge_busy");
@@ -126,9 +134,9 @@ static int RestoreManualNativeOutput(void){
  }
  if(reboot_exit||reboot_late)return -1;
  // No current/queued scanout or GE list references the scaler's old memory.
- if(FreeDepMemory()<0||FreeGeMemory()<0)return NativeWait("workspace_release");
+ if(!native_edram_held&&(FreeDepMemory()<0||FreeGeMemory()<0))return NativeWait("workspace_release");
  home_output_restored=1;utility_native_ready=1;native_wait_reason=NULL;
- ProbeScanout("manual_after_release");
+ ProbeScanout(native_edram_held?"native4m_no_jobs":"manual_after_release");
  logline("native_handoff_complete,edram,%d,reserved,%u,gpu_memory,%d,dep_memory,%d\n",get_size(),reserved,gpu_memory,dep_memory);
  return 0;
 }

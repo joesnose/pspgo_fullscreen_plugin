@@ -67,12 +67,12 @@ int main(void){
  Frame sample={0x09400000,512,3,0};
  BuildFilteredScalePacket(&p,sample,0,0,FILTER_BLUR);float blur_v=p.vertices[30].v;
  BuildFilteredScalePacket(&p,sample,0,0,FILTER_BLURRIER);
- assert(fabsf(p.vertices[31].v-(271.5f-1.5f))<0.0001f);
+ assert(fabsf(p.vertices[31].v-(271.5f-1.125f))<0.0001f);
  // Interior horizontal coordinates verify the radius before edge clamping.
  BuildFilteredScalePacket(&p,sample,0,0,FILTER_BLUR);float blur_u=p.vertices[30+14].u;
  BuildFilteredScalePacket(&p,sample,0,0,FILTER_BLURRIER);float blurrier_u=p.vertices[30+14].u;
  float neutral=0.5f+224.f*(479.f/480.f);
- assert(fabsf((blurrier_u-neutral)-2.f*(blur_u-neutral))<0.0001f);
+ assert(fabsf((blurrier_u-neutral)-1.5f*(blur_u-neutral))<0.0001f);
  BuildFilteredScalePacket(&p,sample,0,0,FILTER_SOFTER);
  assert(fabsf(p.vertices[14].u-(neutral-0.5f))<0.0001f&&blur_v>=0.5f);
  assert(!strcmp(FilterName(FILTER_SOFTER),"Softer")&&!strcmp(FilterName(FILTER_BLURRIER),"Blurrier"));

@@ -18,8 +18,9 @@
 #include <stddef.h>
 #include "render.h"
 #include "effects.h"
-PSP_MODULE_INFO("PSPGoTVScaleV1Auto",0x1000,1,29);
+PSP_MODULE_INFO("PSPGoTVScaleV1Auto",0x1000,1,35);
 extern void sctrlHENPatchSyscall(void *,void *);
+#define LOGGING_ENABLED 0
 static const char *logpath;
 #include "logger.inc"
 
@@ -75,10 +76,28 @@ static int finish_callback=-1;
 static unsigned finish_sequence;
 static volatile unsigned finish_expected,finish_seen;
 static unsigned finish_confirmed;
+static volatile unsigned context_checks,context_clear1,context_clear2,context_nested;
+static void SanitizeUnusedReturns(void){
+ if(!ge_context)return;
+ // 6.61 context header: EXEC, LADR, SADR, RADR1, RADR2.
+ // Match the firmware's own nesting test: DEPTH2 preserves both returns;
+ // DEPTH1 preserves only RADR1. Never inspect/dereference a return address.
+ volatile unsigned *ctx=(volatile unsigned *)ge_context;
+ unsigned exec=ctx[0];++context_checks;
+ if(exec&0x300u)++context_nested;
+ if(!(exec&0x200u)){
+  if(ctx[4]){ctx[4]=0;++context_clear2;}
+  if(!(exec&0x100u)&&ctx[3]){ctx[3]=0;++context_clear1;}
+ }
+}
 static void GeFinish(int token,void *argument){
  (void)argument;
  // GE interrupt context: no I/O, allocation, waiting or driver calls.
- if((unsigned)token==finish_expected&&finish_expected)finish_seen=(unsigned)token;
+ if((unsigned)token==finish_expected&&finish_expected){
+  // Firmware invokes this callback before restoring this list's context.
+  SanitizeUnusedReturns();
+  finish_seen=(unsigned)token;
+ }
 }
 static void InitFinishCallback(void){
  if(finish_callback>=0)return;
@@ -98,6 +117,12 @@ static volatile int home_output_restored,utility_native_ready;
 static int auto_fault;
 static volatile int manual_native;
 static int manual_native_ready,square_down;
+static int native_test_keep4m=1,native_edram_held;
+static unsigned native_test_draws;
+static int hidden_test_enabled=1,hidden_failed,hidden_last_valid,hidden_index;
+static Frame hidden_last_source;
+static unsigned hidden_draws,hidden_last_vcount;
+
 static unsigned next_auto,last_home_resolve,auto_ready_since;
 static int auto_ready_wait;
 static int HomeVisible(void){return home_status&&(home_status()&0x100)!=0;}
@@ -109,6 +134,9 @@ static int FirmwareUtilityVisible(void){
 }
 static int UtilityVisible(void){return FirmwareUtilityVisible();}
 static int MenuVisible(void){return HomeVisible()||UtilityVisible();}
+static int HiddenRendering(void){
+ return hidden_test_enabled&&running&&!reboot_exit&&!reboot_late&&!auto_fault&&!hidden_failed&&manual_native&&manual_native_ready&&native_edram_held&&!reserved&&!MenuVisible();
+}
 static int ScalingVisible(void){return running&&!reboot_exit&&!manual_native&&active&&!home_paused&&!MenuVisible();}
 static int MenuScalingVisible(void){return running&&!reboot_exit&&!manual_native&&home_paused&&home_scaled_ready&&MenuVisible();}
 
@@ -321,7 +349,7 @@ static int GetModeHook(int *mode,int *width,int *height) {
   if(ret>=0&&reserved){if(mode)*mode=restore_mode;if(width)*width=480;if(height)*height=272;}
   return ret;
 }
-static int GetSizeHook(void){return reserved?0x200000:get_size();}
+static int GetSizeHook(void){return (reserved||native_edram_held)?0x200000:get_size();}
 static unsigned Jump(const void *p){return 0x08000000u|(((uintptr_t)p&0x0fffffffu)>>2);}
 static void PrepareHook(Hook *h,unsigned address) {
   h->address=(unsigned *)address;
@@ -418,9 +446,9 @@ static int WaitList(unsigned timeout_us) {
     YieldForList(start,timeout_us,200);
   }
 }
-static int RenderWithFilter(Frame f,unsigned target,int selected_filter) {
+static int RenderWithFilterCore(Frame f,unsigned target,int selected_filter,int hidden) {
   if(!running||reboot_exit||pending_list>=0)return -1;
-  if(manual_native||UtilityVisible())return -2; // utility renderer may reset the shared GE queue
+  if((manual_native&&!hidden)||UtilityVisible()||(hidden&&!HiddenRendering()))return -2; // utility renderer may reset the shared GE queue
   if(!packet||!ge_context)return -1;
   if(BuildFilteredScalePacket(packet,f,target,aspect,selected_filter)<0){++invalid_frames;return -1;}
   unsigned token=(++finish_sequence)&0xffffu;
@@ -437,7 +465,7 @@ static int RenderWithFilter(Frame f,unsigned target,int selected_filter) {
   // Recheck display ownership immediately before submitting scaler work.
   // The original enqueue supports nested interrupt guards.
   int intr=sceKernelCpuSuspendIntr();
-  if(manual_native||UtilityVisible()||!running||reboot_exit){sceKernelCpuResumeIntr(intr);return -2;}
+  if((manual_native&&!hidden)||UtilityVisible()||(hidden&&!HiddenRendering())||!running||reboot_exit){sceKernelCpuResumeIntr(intr);return -2;}
   pending_list=sceGeListEnQueue(packet->commands,NULL,finish_callback,&args);
   sceKernelCpuResumeIntr(intr);
   if(pending_list<0){logline("enqueue_error,0x%08X\n",(unsigned)pending_list);return -1;}
@@ -458,6 +486,21 @@ static int RenderWithFilter(Frame f,unsigned target,int selected_filter) {
   if(ret<0){++timeouts;abort_requested=1;return -1;}
   ++draws;return 0;
 }
+static int RenderWithFilter(Frame f,unsigned target,int selected_filter){return RenderWithFilterCore(f,target,selected_filter,0);}
+static int RenderHiddenOutput(void){
+ if(!HiddenRendering())return 1;
+ Frame f=Snapshot(&source);if(!ValidFrame(f))return 1;
+ if(hidden_last_valid&&f.serial==hidden_last_source.serial&&f.address==hidden_last_source.address&&f.stride==hidden_last_source.stride&&f.format==hidden_last_source.format)return 1;
+ if(hidden_last_valid&&(unsigned)sceDisplayGetVcount()==hidden_last_vcount)return 1;
+ unsigned target=(unsigned)hidden_index^1u;
+ // Deliberately no SetMode/SetFrameBuf/ready_buffer publication here.
+ int result=RenderWithFilterCore(f,target,FILTER_SOFT,1);
+ if(result<0){if(result!=-2){hidden_failed=1;logline("hidden_test_failed,result,%d\n",result);}return result;}
+ hidden_index=(int)target;hidden_last_source=f;hidden_last_valid=1;
+ hidden_last_vcount=(unsigned)sceDisplayGetVcount();++hidden_draws;
+ if(hidden_draws==1)ProbeScanout("hidden_render_started");
+ return 0;
+}
 static int Render(Frame f,unsigned target){
   if(!running||reboot_exit||pending_list>=0)return -1;
   if(filter_mode==FILTER_DEPOSTERISE) {
@@ -477,10 +520,9 @@ static int Render(Frame f,unsigned target){
   }
   return ret;
 }
-/* The game, not the TV worker cadence, determines whether a fresh frame exists.
- * Duplicate source presentations need no additional GE/context/scanout work. */
+/* R35 comparison: refresh the existing source even without another game
+ * framebuffer submission, retaining the one-render-per-TV-refresh fence. */
 static int UpdateGameOutput(Frame f){
- if(last_scaled_valid&&f.serial==last_scaled_source.serial&&f.address==last_scaled_source.address&&f.stride==last_scaled_source.stride&&f.format==last_scaled_source.format)return 1;
  // Never overwrite both scanout buffers within the same TV refresh if a
  // game presents several times before vblank. The newest source stays pending.
  if(scaled_refresh_valid&&(unsigned)sceDisplayGetVcount()==last_scaled_vcount)return 1;
@@ -499,7 +541,7 @@ static int UpdateGameOutput(Frame f){
 static int Deactivate(void) {
   if(pending_list>=0)return -1;
   active=0;
-  if(reserved) {
+  if(reserved||native_edram_held) {
     int ret=0;
     if(TvActive())ret=real_mode(restore_mode,480,272);
     Frame f=Snapshot(&original0);
@@ -511,7 +553,7 @@ static int Deactivate(void) {
     else ret=-1;
     sceKernelCpuResumeIntr(intr);
     if(ret<0){logline("disable_pending_edram_cleanup\n");return -1;}
-    reserved=0;
+    reserved=native_edram_held=0;
   }
   abort_requested=0;ready_buffer=NULL;logline("disabled\n");return 0;
 }
@@ -618,6 +660,7 @@ static int ResumeAfterHome(void) {
   if(MenuVisible())return 1;
   ReleaseHomeOutput();
   if(!reserved){
+    if(native_edram_held&&ReleaseNativeEdram()!=0)return 1;
     if(!ReadyToAutoStart())return 1;
     int ret=Activate();
     if(ret<0)return -1;
@@ -658,8 +701,10 @@ static void AutoControl(int menu,unsigned now) {
     if(!manual_native_ready){
       int ret=RestoreManualNativeOutput();
       if(ret!=0)return;
-      manual_native_ready=1;
-      logline("diagnostic_native_ready,edram,%d,gpu_memory,%d,no_scaler_jobs,1\n",get_size(),gpu_memory);
+      manual_native_ready=1;native_test_draws=draws;
+      hidden_failed=hidden_last_valid=hidden_index=0;hidden_draws=0;
+      logline("hidden_handoff,ready,1,edram,%d,held,%u,gpu_uid,%d,dep_uid,%d,draws,%u,pending,%d\n",get_size(),native_edram_held,gpu_memory,dep_memory,draws,pending_list);
+      logline("diagnostic_native_ready,edram,%d,gpu_memory,%d,hidden_jobs_requested,%u\n",get_size(),gpu_memory,hidden_test_enabled);
     }
     home_output_restored=1;utility_native_ready=1;
     return;
@@ -694,7 +739,7 @@ static void CleanupBeforeReboot(void) {
   if(reboot_late){worker_done=1;return;}
   if(pending_list>=0)WaitList(100000);
   if(reboot_late){worker_done=1;return;}
-  if(pending_list<0&&reserved) {
+  if(pending_list<0&&(reserved||native_edram_held)) {
     // Never leave the menu/user buffer or scaler layer selected for reboot.
     int frame_ret=real_frame(0,NULL,0,0,1);
     if(reboot_late){worker_done=1;return;}
@@ -705,7 +750,7 @@ static void CleanupBeforeReboot(void) {
                                         (unsigned)(sceKernelGetSystemTimeLow()-start)<50000u);
     int intr=sceKernelCpuSuspendIntr();
     if(!reboot_late&&frame_ret>=0&&mode_ret>=0&&(unsigned)((unsigned)sceDisplayGetVcount()-vcount)>=2&&
-       sceGeDrawSync(1)==PSP_GE_LIST_DONE&&set_size(0x200000)>=0)reserved=0;
+       sceGeDrawSync(1)==PSP_GE_LIST_DONE&&set_size(0x200000)>=0)reserved=native_edram_held=0;
     sceKernelCpuResumeIntr(intr);
   }
   if(!reboot_late)logline("reboot_worker_end,pending,%d,reserved,%u\n",pending_list,reserved);
@@ -713,6 +758,7 @@ static void CleanupBeforeReboot(void) {
   worker_done=1;
 }
 static void LogMenuLayers(void) {
+ if(!LOGGING_ENABLED)return;
   Frame native=Snapshot(&original0);
   logline("menu_source,scaled,%u,address,0x%08X,stride,%d,format,%d\n",home_scaled_ready,native.address,native.stride,native.format);
   int m=-1,w=0,h=0;get_mode(&m,&w,&h);
@@ -724,6 +770,12 @@ static void LogMenuLayers(void) {
   }
 }
 static void Report(void) {
+ if(!LOGGING_ENABLED)return;
+ logline("context_returns,checks,%u,cleared_radr1,%u,cleared_radr2,%u,nested,%u\n",context_checks,context_clear1,context_clear2,context_nested);
+ if(manual_native_ready){int mode=-1,w=0,h=0;get_mode(&mode,&w,&h);
+  logline("hidden_test,ready,1,allowed,%u,failed,%u,edram,%d,held,%u,mode,0x%X,width,%d,height,%d,gpu_uid,%d,hidden_draws,%u,total_draws,%u,draws_at_handoff,%u,pending,%d\n",HiddenRendering(),hidden_failed,get_size(),native_edram_held,(unsigned)mode,w,h,gpu_memory,hidden_draws,draws,native_test_draws,pending_list);
+ }
+ if(manual_native_ready)logline("hidden_handoff,ready,1,edram,%d,held,%u,gpu_uid,%d,dep_uid,%d,draws,%u,draws_at_handoff,%u,pending,%d\n",get_size(),native_edram_held,gpu_memory,dep_memory,draws,native_test_draws,pending_list);
   logline("logger_stats,dropped,%u,write_errors,%u,finish_confirmed,%u\n",log_dropped,log_write_errors,finish_confirmed);
   Frame f=Snapshot(&source);
   logline("stats,ms,%u,active,%u,aspect,%u,presents,%u,draws,%u,queue_gpu_wait_avg_us,%u,max_wait_us,%u,timeouts,%u,invalid_frames,%u,paused_lists,%u,pending,%d,diagnostic_native,%u,source,0x%08X,stride,%d,format,%d\n",
@@ -731,7 +783,7 @@ static void Report(void) {
           draws?(unsigned)(wait_total/draws):0,max_wait,timeouts,invalid_frames,paused_lists,pending_list,manual_native,f.address,f.stride,f.format);
 }
 static void WaitForWork(void){
- if(active&&presentation_event>=0){
+ if((active||HiddenRendering())&&presentation_event>=0){
   u32 bits=0;SceUInt timeout=16667;
   // The event is sticky: a present before this wait is not lost. Multiple
   // pending presents coalesce; UpdateGameOutput takes the newest source.
@@ -742,12 +794,14 @@ static void WaitForWork(void){
 }
 static int MainThread(SceSize argc,void *argv) {
   (void)argc;(void)argv;
+  if(LOGGING_ENABLED){
   log_worker=sceKernelGetThreadId();
   const char *paths[]={"ef0:/PSPGoTVScale.txt","ms0:/PSPGoTVScale.txt"};
   for(unsigned i=0;i<2;++i){SceUID fd=sceIoOpen(paths[i],PSP_O_WRONLY|PSP_O_CREAT|PSP_O_TRUNC,0666);if(fd>=0){logpath=paths[i];sceIoClose(fd);break;}}
   if(!logpath)return 0;
+  }
   unsigned fw=sceKernelDevkitVersion();
-  logline("PSPGoTVScale,base,alpha1,variant,tidy_r29,model,%d,devkit,0x%08X\n",sceKernelGetModel(),fw);
+  logline("PSPGoTVScale,base,alpha1,variant,continuous_r35,model,%d,devkit,0x%08X\n",sceKernelGetModel(),fw);
   if(sceKernelGetModel()!=4||(fw!=0x06060010&&fw!=0x06060110)){logline("unsupported_model_or_firmware\n");FlushLogs(LOG_QUEUE_CAPACITY);return 0;}
   logline("scheduler,event,%d,worker_priority,%u\n",presentation_event,SCALER_WORKER_PRIORITY);
   filter_mode=FILTER_SOFT;logline("filter,%s\n",FilterName(filter_mode));
@@ -762,7 +816,7 @@ static int MainThread(SceSize argc,void *argv) {
   while(running) {
     FlushLogs(8);
     unsigned now=sceKernelGetSystemTimeLow();
-    PollScanoutProbe(now);
+    if(LOGGING_ENABLED)PollScanoutProbe(now);
     if(now-last_home_resolve>=500000u){ResolveHomeStatus();ResolveUtilityStatus();ResolveInput();last_home_resolve=now;}
     int menu=MenuVisible();
     static int last_utility;int utility=UtilityVisible();
@@ -779,6 +833,7 @@ static int MainThread(SceSize argc,void *argv) {
       int ret=RenderHome();
       if(ret<0){auto_fault=1;home_scaled_ready=0;logline("menu_scaling_failed\n");}
     } else if(!menu)ReleaseHomeOutput();
+    if(HiddenRendering())RenderHiddenOutput();
     if(active) {
       Frame f=Snapshot(&source);
       if(f.address&&!ValidFrame(f)){++invalid_frames;abort_requested=1;continue;}
@@ -809,7 +864,7 @@ int module_stop(SceSize args,void *argp) {
   if(pending_list>=0)return -1; // Do not free a context/list still used by GE.
   running=0;NotifyWorker();
   if(worker>=0){sceKernelWaitThreadEnd(worker,NULL);sceKernelDeleteThread(worker);worker=-1;}
-  if(reserved&&Deactivate()<0)return -1;
+  if((reserved||native_edram_held)&&Deactivate()<0)return -1;
   RemoveHooks();ClosePresentationEvent();
   if(finish_callback>=0){sceGeUnsetCallback(finish_callback);finish_callback=-1;}
   if(FreeDepMemory()<0)return -1;

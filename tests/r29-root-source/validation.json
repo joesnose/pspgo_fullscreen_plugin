@@ -1,0 +1,24 @@
+{
+  "variant": "Tidy R29",
+  "revision": 29,
+  "baseline": "uploaded fixed-v2 Soft build",
+  "hardware_tested": false,
+  "psp_build": "passed -Wall -Wextra -Werror",
+  "host_tests": [
+    "actual-source control/HOME/native/event/GE regressions ASan/UBSan",
+    "cache writeback covers all active GPU arrays and excludes unused arrays",
+    "callback-enabled stuck list times out in1500us without blocking sync calls",
+    "rejected publication preserves previous pointer/index/source; accepted scaled publication queues forvblank; native sync unchanged",
+    "144 GPU packet cases and192 filter cases",
+    "unused packet arrays remain untouched",
+    "CPU deposterise and queued logger regressions"
+  ],
+  "changes": [
+    "complete active-range cache flush",
+    "bounded polling waits",
+    "vblank-scaled publication",
+    "metadata-only packet reset",
+    "canonical Soft test/unused guard removal/unique identifier"
+  ],
+  "limitations": "real hardware/cache/timing confirmation needed; no Burnout end-of-race crash fix claimed"
+}

@@ -1,3 +1,6 @@
+#ifndef LOGGING_ENABLED
+#define LOGGING_ENABLED 1
+#endif
 /* Producers only format and copy into fixed kernel memory. File I/O belongs
  * exclusively to the worker; full queues drop new records rather than wait. */
 #define LOG_QUEUE_CAPACITY 32u
@@ -7,6 +10,7 @@ static LogRecord log_queue[LOG_QUEUE_CAPACITY];
 static unsigned log_head,log_count,log_dropped,log_write_errors;
 static SceUID log_worker=-1;
 static void logline(const char *format, ...) {
+    if(!LOGGING_ENABLED)return;
     if (!logpath) return;
     char line[LOG_LINE_BYTES];
     va_list ap;
@@ -58,6 +62,7 @@ static int LogInterruptsEnabled(void){
 #endif
 }
 static void FlushLogs(unsigned budget){
+    if(!LOGGING_ENABLED)return;
     if(!logpath||log_worker<0||sceKernelIsIntrContext()||!LogInterruptsEnabled()||sceKernelGetThreadId()!=log_worker)return;
     if(budget>LOG_QUEUE_CAPACITY)budget=LOG_QUEUE_CAPACITY;
     int intr=sceKernelCpuSuspendIntr();unsigned available=log_count;sceKernelCpuResumeIntr(intr);

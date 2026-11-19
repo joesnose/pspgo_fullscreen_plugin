@@ -26,6 +26,7 @@ static void ResolveScanoutProbe(void){
  logline("probe_support,ge_getter,%u,cmd_getter,%u,dma_getter,%u\n",probe_ge!=NULL,probe_cmd!=NULL,probe_dma!=NULL);
 }
 static void ProbeScanout(const char *point){
+ if(!LOGGING_ENABLED&&strcmp(point,"cold_native"))return;
  if(!TvActive()){logline("scanout_probe_skipped,point,%s,tv_inactive,1\n",point);return;}
  unsigned dma[5],lcd[3];int mode=-1,w=0,h=0,software=-1,ge[3]={-1,-1,-1},cache[3]={-1,-1,-1};
  int commands[3]={-1,-1,-1};

@@ -1,4 +1,4 @@
-TARGET = PSPGoTVScale
+TARGET = joesnose_Go_fullscreen
 OBJS = main.o render.o effects.o
 CFLAGS = -O2 -G0 -Wall -Wextra -Werror -std=gnu11 -fno-pic
 BUILD_PRX = 1

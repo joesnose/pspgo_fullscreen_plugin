@@ -58,9 +58,9 @@ int BuildFilteredScalePacket(ScalePacket *p,Frame s,unsigned output,int aspect,i
   p->image_vertices=(unsigned)passes*30u;
   for(int pass=0;pass<passes;++pass) {
     float offset_x=dx[pass],offset_y=dy[pass];
-    // Softer averages four bilinear samples; Blurrier doubles Blur's radius.
+    // Softer averages four bilinear samples; Blurrier uses 1.5 times Blur's radius.
     if(filter==FILTER_SOFTER){offset_x=dx[pass+1]*(2.f/3.f);offset_y=dy[pass+1]*(2.f/3.f);}
-    if(filter==FILTER_BLURRIER){offset_x*=2.f;offset_y*=2.f;}
+    if(filter==FILTER_BLURRIER){offset_x*=1.5f;offset_y*=1.5f;}
     ScaleVertex *vertices=&p->vertices[pass*30];
     for(int i=0;i<15;++i) {
       int a=i*32,b=a+32;

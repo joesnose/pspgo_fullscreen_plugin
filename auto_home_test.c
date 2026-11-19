@@ -86,6 +86,8 @@ static int FakeFrame(int pri,void *p,int stride,int format,int sync){
  return 0;
 }
 static void Reset(void){
+ hidden_test_enabled=hidden_failed=hidden_last_valid=hidden_index=0;hidden_draws=hidden_last_vcount=0;
+ native_test_keep4m=native_edram_held=0;native_test_draws=0;
  sync_running=frame_fail=last_frame_sync=0;memset(cached_bytes,0,sizeof(cached_bytes));
  finish_callback=-1;finish_sequence=finish_expected=finish_seen=finish_confirmed=finish_on_enqueue=0;
  presentation_event=-1;event_bits=event_waits=event_sets=event_deletes=0;last_scaled_vcount=0;
@@ -109,6 +111,70 @@ static void Reset(void){
  assert(!((uintptr_t)packet&63)&&!((uintptr_t)ge_context&63));
 }
 int main(void){
+ assert(hidden_test_enabled==1);
+ Reset();assert(InitGeMemory()==0);
+ unsigned *ctx=(unsigned *)ge_context;
+ const unsigned depths[]={0,0x100,0x200,0x300};
+ for(unsigned i=0;i<4;i++){
+  for(unsigned j=0;j<512;j++)ctx[j]=0x12340000u+j;
+  ctx[0]=depths[i];PspGeContext before=*ge_context;
+  finish_expected=77;finish_seen=0;
+  GeFinish(76,NULL);assert(!memcmp(&before,ge_context,sizeof(before))&&finish_seen==0);
+  GeFinish(77,NULL);assert(finish_seen==77);
+  assert(ctx[3]==((depths[i]&0x300)?0x12340003u:0));
+  assert(ctx[4]==((depths[i]&0x200)?0x12340004u:0));
+  ((unsigned *)&before)[3]=ctx[3];((unsigned *)&before)[4]=ctx[4];
+  assert(!memcmp(&before,ge_context,sizeof(before)));
+ }
+ assert(context_checks==4&&context_clear1==1&&context_clear2==2&&context_nested==3);
+ Reset();native_test_keep4m=hidden_test_enabled=1;AutoControl(0,0);
+ SceUID hidden_workspace=gpu_memory;manual_native=1;AutoControl(0,clock_us);
+ assert(HiddenRendering()&&!active&&!reserved&&edram==0x400000&&NativeHardwareReady());
+ int hidden_modes=mode_calls,hidden_frames=frame_calls;void *hidden_ready=ready_buffer;
+ unsigned hidden_before=draws;
+ for(int i=0;i<10;i++){
+  clock_us+=16667;source.serial++;
+  assert(RenderHiddenOutput()==0&&pending_list<0&&hidden_draws==(unsigned)i+1);
+  assert(mode_calls==hidden_modes&&frame_calls==hidden_frames&&ready_buffer==hidden_ready);
+  assert(gpu_memory==hidden_workspace&&edram==0x400000&&NativeHardwareReady());
+  unsigned destination=0;
+  for(unsigned c=0;c<packet->count;c++)if((packet->commands[c]>>24)==0x9c)destination=packet->commands[c]&0xffffffu;
+  assert(destination>=0x200000&&destination+TV_FRAME_BYTES<=0x400000);
+ }
+ assert(draws==hidden_before+10&&Render(game_frame,0)==-2);
+ int hidden_jobs=enqueue_calls;assert(RenderHiddenOutput()==1&&enqueue_calls==hidden_jobs);
+ menu_bits=0x100;assert(!HiddenRendering()&&RenderHiddenOutput()==1&&RenderHome()==1&&enqueue_calls==hidden_jobs);
+ menu_bits=0;utility_kind=1;utility_state=2;
+ assert(!HiddenRendering()&&RenderHiddenOutput()==1&&enqueue_calls==hidden_jobs);
+ utility_kind=utility_state=0;source.serial++;clock_us+=16667;assert(RenderHiddenOutput()==0);
+ unsigned hidden_after=hidden_draws;reboot_exit=1;
+ assert(RenderHiddenOutput()==1&&hidden_draws==hidden_after);
+ reboot_exit=0;manual_native=0;next_auto=clock_us;AutoControl(0,clock_us);
+ assert(active&&reserved&&!native_edram_held&&!HiddenRendering());
+ Reset();native_test_keep4m=hidden_test_enabled=1;AutoControl(0,0);
+ manual_native=1;AutoControl(0,clock_us);source.serial++;clock_us+=16667;
+ assert(HiddenRendering()&&RenderHiddenOutput()==0);
+ reboot_exit=1;running=0;CleanupBeforeReboot();
+ assert(!native_edram_held&&!reserved&&edram==0x200000&&worker_done);
+
+ assert(native_test_keep4m==1); // Actual runtime default of this diagnostic.
+ Reset();native_test_keep4m=1;AutoControl(0,0);
+ SceUID test_workspace=gpu_memory;unsigned test_jobs=enqueue_calls,test_draws=draws;
+ unsigned test_chord=PSP_CTRL_LTRIGGER|PSP_CTRL_RTRIGGER|PSP_CTRL_SQUARE;
+ pad_buttons=test_chord;PollFilter(0,clock_us);AutoControl(0,clock_us);
+ assert(manual_native&&manual_native_ready&&!active&&!reserved&&native_edram_held);
+ assert(edram==0x400000&&GetSizeHook()==0x200000&&gpu_memory==test_workspace&&dep_memory<0&&NativeHardwareReady());
+ for(int tick=0;tick<60;tick++){AutoControl(MenuVisible(),clock_us);assert(Render(game_frame,0)==-2&&RenderHome()==1);clock_us+=16667;}
+ assert(draws==test_draws&&enqueue_calls==(int)test_jobs&&native_test_draws==test_draws);
+ int native_mode,native_width,native_height;GetModeHook(&native_mode,&native_width,&native_height);
+ assert(native_mode==0x2d2&&native_width==480&&native_height==272);
+ pad_buttons=0;PollFilter(0,clock_us);pad_buttons=test_chord;PollFilter(0,clock_us);AutoControl(0,clock_us);
+ assert(active&&reserved&&!native_edram_held&&edram==0x400000);
+ // Held bank is cleaned up on reboot, without new scaler GPU jobs.
+ Reset();native_test_keep4m=1;AutoControl(0,0);manual_native=1;AutoControl(0,clock_us);
+ assert(native_edram_held);reboot_exit=1;running=0;CleanupBeforeReboot();
+ assert(!native_edram_held&&!reserved&&edram==0x200000&&worker_done);
+
  // Timeout remains bounded with a registered finish callback and stuck GE.
  Reset();InitFinishCallback();pending_list=7;finish_expected=42;sync_running=1;
  unsigned wait_start=clock_us;assert(WaitList(1500)==-1&&clock_us-wait_start==1500&&pending_list==7);
@@ -148,6 +214,15 @@ int main(void){
  int duplicate_jobs=enqueue_calls,duplicate_frames=frame_calls;
  for(int repeat=0;repeat<60;repeat++)assert(UpdateGameOutput(fresh)==1);
  assert(enqueue_calls==duplicate_jobs&&frame_calls==duplicate_frames);
+ // Silent producer: the identical source is rendered/published again next refresh.
+ for(int repeat=0;repeat<60;repeat++){
+  clock_us+=16667;assert(UpdateGameOutput(fresh)==0);
+  assert(last_scaled_source.serial==fresh.serial);
+  int once=enqueue_calls;assert(UpdateGameOutput(fresh)==1&&enqueue_calls==once);
+ }
+ assert(enqueue_calls==duplicate_jobs+60&&frame_calls==duplicate_frames+60);
+ duplicate_jobs=enqueue_calls;
+
  clock_us+=16667;fresh.serial++;assert(UpdateGameOutput(fresh)==0&&enqueue_calls==duplicate_jobs+1);
  assert(UpdateGameOutput(fresh)==1&&enqueue_calls==duplicate_jobs+1);
  // Filter changes invalidate the cached presentation even on a still frame.
@@ -387,10 +462,10 @@ int main(void){
  // no allocations, mode changes or GE submissions. Active capture waits 2 VB.
  Reset();AutoControl(0,0);int probe_jobs=enqueue_calls,probe_modes=mode_calls;
  unsigned probe_allocs=ge_allocations,prior_words=probe_word_reads;
- ProbeScanout("host_probe");assert(probe_word_reads==prior_words+5);
+ ProbeScanout("host_probe");assert(probe_word_reads==prior_words+(LOGGING_ENABLED?5u:0u));
  assert(enqueue_calls==probe_jobs&&mode_calls==probe_modes&&ge_allocations==probe_allocs);
  probe_word_reads=0;PollScanoutProbe(clock_us);assert(probe_word_reads==0);
- clock_us+=33334;PollScanoutProbe(clock_us);assert(probe_word_reads==5&&!probe_active_pending);
+ clock_us+=33334;PollScanoutProbe(clock_us);assert(probe_word_reads==(LOGGING_ENABLED?5u:0u)&&!probe_active_pending);
  // Firmware state 4 is resumable PAUSED, not proof of completion.
  Reset();AutoControl(0,0);sync_paused=1;unsigned completed=draws;
  assert(Render(game_frame,1)==-2&&pending_list==7&&draws==completed);
@@ -461,7 +536,7 @@ int main(void){
  filter_mode=FILTER_DITHER;pad_buttons=0;PollFilter(0,109);alloc_fail=1;
  pad_buttons=chord;PollFilter(0,110);assert(filter_mode==FILTER_SHARP&&dep_memory<0);alloc_fail=0;
  assert(FreeGeMemory()==0);
- puts("Tidy R29 cache ranges/bounded waits/vblank publication plus finish-confirmed frames and stable HOME plus automatic startup/filter cycle/native toggle/utility dialog/HOME/paused-GE and GE user-memory checks passed: immediate default-on, TV/source gating, busy retry, fault latch, NODS native status, NULL/kernel output restoration, native menu RGBA5551 GPU scaling, reboot quiesce/scanout cleanup, preserved HOME canvas/stride/format, no HOME resize, automatic resume and in-flight HOME suppression.");
+ puts("R35 continuous-source refresh plus R32 context no-publication/native geometry/UI suppression plus R30/R29 finish-confirmed frames and stable HOME plus automatic startup/filter cycle/native toggle/utility dialog/HOME/paused-GE and GE user-memory checks passed: immediate default-on, TV/source gating, busy retry, fault latch, NODS native status, NULL/kernel output restoration, native menu RGBA5551 GPU scaling, reboot quiesce/scanout cleanup, preserved HOME canvas/stride/format, no HOME resize, automatic resume and in-flight HOME suppression.");
 }
 unsigned TestRead(unsigned off){return off==0?3:off==0x1c?(lcd_force_scaled?2160:slot_driver?(hardware_width==720?2160:2040):(mode_v==0xd2?2160:2040)):off==0x2c?480:0;}
 int sceKernelIsIntrContext(void){return 0;}
