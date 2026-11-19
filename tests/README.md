@@ -53,3 +53,8 @@ The current release and source are at the [repository root](../README.md). These
 
 - [R36 LCD/TV filter test ZIP](joesnose_Go_fullscreen-r36-lcd-test.zip)
 - [R36 source and instructions](lcd-r36-test/)
+
+## LME experiment
+
+- [R37 separate LME native-HOME test ZIP](joesnose_Go_fullscreen_LME-r37-test.zip)
+- [R37 source and instructions](lme-r37-test/)

@@ -1,0 +1,10 @@
+{
+  "variant": "lme_native_home_r37",
+  "base": "continuous_r35",
+  "binary": "joesnose_Go_fullscreen_LME.prx",
+  "logging": "PSPGoTVScale_LME.txt",
+  "HOME": "native output, no menu GE jobs, resume after dismissal",
+  "psp_build": "passed with -Werror",
+  "host_tests": "ASan/UBSan lifecycle passed, including native HOME/no jobs/passthrough/resume",
+  "hardware_test": "pending on 6.60 LME PSP Go"
+}
