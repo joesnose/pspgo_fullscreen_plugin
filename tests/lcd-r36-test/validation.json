@@ -1,0 +1,12 @@
+{
+  "variant": "lcd_filters_r36",
+  "base": "continuous_r35",
+  "output_profiles": {
+    "LCD": "480x272 RGB565, stride 512",
+    "TV": "720x480 RGB565, stride 768"
+  },
+  "host_tests": "ASan/UBSan lifecycle, LCD/TV filter packets, effects and notice bounds passed",
+  "psp_build": "passed with -Werror",
+  "hardware_test": "pending",
+  "LME_HOME_fix": "not established"
+}

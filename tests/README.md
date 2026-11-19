@@ -48,3 +48,8 @@ The current release and source are at the [repository root](../README.md). These
 - [quiet-r33](quiet-r33/)
 - [uploaded-fixed-v2-soft](uploaded-fixed-v2-soft/)
 - [uploaded-fixed](uploaded-fixed/)
+
+## LCD experiment
+
+- [R36 LCD/TV filter test ZIP](joesnose_Go_fullscreen-r36-lcd-test.zip)
+- [R36 source and instructions](lcd-r36-test/)
