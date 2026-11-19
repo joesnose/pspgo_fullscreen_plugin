@@ -1,0 +1,11 @@
+{
+  "variant": "quiet_r33",
+  "base": "context_returns_r32",
+  "binary": "joesnose_Go_fullscreen.prx",
+  "logging": false,
+  "blurrier_radius_relative_to_blur": 1.5,
+  "psp_build": "passed with warnings treated as errors",
+  "host_tests": "ASan/UBSan filter and lifecycle suites passed",
+  "binary_inspection": "log paths and diagnostic format strings absent",
+  "hardware_test": "pending for R33; R32 base passed reported Burnout native and scaled transitions"
+}
