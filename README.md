@@ -2,7 +2,7 @@
 
 Fullscreen TV scaling for PSP Go with progressive component output on ARK 6.60/6.61.
 
-**Latest release: [R35](https://github.com/joesnose/pspgo_fullscreen_plugin/releases/latest)** · [Download ZIP](https://github.com/joesnose/pspgo_fullscreen_plugin/releases/download/r35/joesnose_Go_fullscreen-r35.zip)
+**Latest release: [R35](https://github.com/joesnose/pspgo_fullscreen_plugin/releases/latest)** · [Download ZIP](https://github.com/joesnose/pspgo_fullscreen_plugin/raw/refs/heads/main/joesnose_Go_fullscreen-r35.zip)
 
 The current source, `joesnose_Go_fullscreen.prx` and matching ELF are at the repository root. Earlier builds, diagnostics and their sources are archived in [tests/](tests/README.md).
 
@@ -20,7 +20,7 @@ Filters: Sharp, Soft, Softer, Blur, Blurrier, CRT, Soft CRT, RGB Mask, Sharpen, 
 
 ## R35 changes and validation
 
-R35 restores rendering of the current framebuffer even when the game stops submitting new framebuffer presentations, while retaining the one-render-per-TV-refresh fence and queued display publication. The user confirmed that this resolves the Liberty City Stories stall on their PSP Go, after isolating its introduction to R26. The R32 unused GPU CALL return-register fix is retained; the user confirmed Burnout Legends Complete/Continue passes in R32 with both native and scaled output. Burnout has not yet been revalidated on this exact R35 build.
+R35 restores rendering of the current framebuffer even when the game stops submitting new framebuffer presentations, while retaining the one-render-per-TV-refresh fence and queued display publication. The user confirmed that this resolves the Liberty City Stories stall on their PSP Go, after isolating its introduction to R26. The R32 unused GPU CALL return-register fix is retained; the user confirmed Burnout Legends Complete/Continue passes in R32 with both native and scaled output. The user also confirmed Burnout works with this exact R35 build.
 
 Logging is disabled. No new `PSPGoTVScale.txt` is created or written; any existing file contains an earlier run. Rendering unchanged sources adds GPU work and can affect performance. This build retains the diagnostic native-mode behaviour from R32: native-size output can still render scaled frames into hidden buffers. The shortcut therefore changes output size without guaranteeing that all scaler GPU work stops.
 

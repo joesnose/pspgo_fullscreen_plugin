@@ -9,7 +9,7 @@
   "host_tests": "ASan/UBSan lifecycle passed; identical-source 60-refresh rendering and publication verified",
   "hardware_test": {
     "Liberty City Stories": "R35 user-confirmed working on PSP Go",
-    "Burnout Legends": "R32 user-confirmed native/scaled passes; exact R35 retest pending"
+    "Burnout Legends": "R35 user-confirmed working on PSP Go"
   },
   "distribution": "latest release R35"
 }
